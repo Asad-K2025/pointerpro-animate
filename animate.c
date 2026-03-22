@@ -236,7 +236,42 @@ size_t animate_frame_size_bytes(struct canvas* canvas){
 void animate_generate_frame(const struct canvas* canvas, size_t frame,
                             size_t frame_rate, void* buf) {
     
-    
+    color_t* frame_buf = (color_t*) buf;  // treating buff as array of color_t using casting
+
+    size_t total = canvas->width * canvas->height;
+
+    for (size_t i = 0; i < total; i++){
+        frame_buf[i] = canvas->background_color;
+    }
+
+    struct sprite_placement* placement = canvas->head;
+
+    while(placement){
+        struct sprite* sprite = placement->sprite;
+
+        for (size_t sy = 0; sy < sprite->height; sy++){
+            for (size_t sx = 0; sx < sprite->width; sx++){
+                ssize_t cx = placement->x + sx; // canvas x and y
+                ssize_t cy = placement->y + sy;
+
+                if (cx < 0 || cy < 0 || 
+                    cx >= (ssize_t)canvas->width || 
+                    cy >= (ssize_t)canvas->height){
+                        continue;
+                }
+                
+                color_t pixel = sprite->pixels[sy * sprite->width + sx];
+
+                if ((pixel >> 24) == 0){
+                    continue;  // skip transparent pixels
+                }
+
+                frame_buf[cy * canvas->width + cx] = pixel;
+            }
+        }
+        placement = placement->next;
+    }
+
 }
 
 // Optional extension
