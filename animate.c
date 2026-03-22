@@ -10,13 +10,21 @@ struct sprite {
 };
 
 struct sprite_placement {
-    // TODO
+    struct sprite* sprite;
+    struct canvas* canvas;
+
+    ssize_t x;
+    ssize_t y;
+
+    struct sprite_placement* next;  // for linked list
 };
 
 struct canvas {
     size_t width;
     size_t height;
     color_t background_color;
+
+    struct sprite_placement* head;  // store top sprite in linked list format
 };
 
 
@@ -96,6 +104,11 @@ struct sprite* animate_create_circle(size_t radius, color_t c, bool filled) {
     circle->width = diameter;
     circle->height = diameter;
     circle->pixels = calloc(diameter * diameter, sizeof(color_t));
+
+    if (circle->pixels == NULL){
+        free(circle);
+        return NULL;
+    }
     
     if (filled) {
         for (size_t row = 0; row < diameter; row++){
@@ -127,7 +140,7 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
 
     // using calloc to set memeory to 0, important for non-filled rectangle
     rectangle->pixels = calloc(width * height, sizeof(color_t));
-    if (!rectangle->pixels) {
+    if (rectangle->pixels == NULL) {
         free(rectangle);
         return NULL;
     }
@@ -163,8 +176,23 @@ bool animate_destroy_sprite(struct sprite* sprite) {
 struct sprite_placement* animate_place_sprite(struct canvas* canvas,
                                               struct sprite* sprite,
                                               ssize_t x, ssize_t y) {
-    // TODO
-    return NULL;
+    
+    struct sprite_placement* placement = malloc(sizeof(struct sprite_placement));
+
+    if (placement == NULL){
+        return NULL;
+    }
+
+    placement->sprite = sprite;
+    placement->canvas = canvas;
+    placement->x = x;
+    placement->y = y;
+
+    // inserts sprite in top layer of canvas using linked list
+    placement->next = canvas->head;
+    canvas->head = placement;
+
+    return placement;
 }
 
 void animate_placement_up(struct sprite_placement* sprite_placement){
@@ -198,13 +226,17 @@ void animate_destroy_canvas(struct canvas* canvas){
 }
 
 size_t animate_frame_size_bytes(struct canvas* canvas){
-    // TODO
-    return 0;
+    if (canvas == NULL){
+        return 0;
+    } else {
+        return canvas->width * canvas->height * sizeof(color_t);
+    }
 }
 
 void animate_generate_frame(const struct canvas* canvas, size_t frame,
                             size_t frame_rate, void* buf) {
-    // TODO
+    
+    
 }
 
 // Optional extension
