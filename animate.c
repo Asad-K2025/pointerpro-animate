@@ -169,7 +169,12 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
 }
 
 bool animate_destroy_sprite(struct sprite* sprite) {
-    // TODO
+    if (sprite == NULL){
+        return 0;
+    }
+
+    free(sprite->pixels);
+    free(sprite);
     return 1;
 }
 
@@ -238,7 +243,7 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
     
     color_t* frame_buf = (color_t*) buf;  // treating buff as array of color_t using casting
 
-    size_t total = canvas->width * canvas->height;
+    size_t total = canvas->width * canvas->height; 
 
     for (size_t i = 0; i < total; i++){
         frame_buf[i] = canvas->background_color;
