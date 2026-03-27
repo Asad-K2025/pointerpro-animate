@@ -227,7 +227,19 @@ void animate_set_animation_params(struct sprite_placement* sprite_placement,
 }
 
 void animate_destroy_canvas(struct canvas* canvas){
-    // TODO
+    if (canvas == NULL) {
+        return;
+    }
+
+    struct sprite_placement* current = canvas->head;
+
+    while (current != NULL){
+        struct sprite_placement* next = current->next;
+        free(current);
+        current = next;
+    }
+
+    free(canvas);
 }
 
 size_t animate_frame_size_bytes(struct canvas* canvas){
