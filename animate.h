@@ -201,7 +201,7 @@ void animate_set_animation_params(struct sprite_placement* sprite_placement,
  * @param ax the acceleration in the x direction
  * @param ay the acceleration in the y direction
  */
-void animate_set_animation_funtion(struct sprite_placement* sprite_placement,
+void animate_set_animation_function(struct sprite_placement* sprite_placement,
                                    animate_fn, void* priv);
 
 /**

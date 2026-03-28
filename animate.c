@@ -15,8 +15,13 @@ struct sprite_placement {
 
     ssize_t x;
     ssize_t y;
+    ssize_t vx;
+    ssize_t vy;
+    ssize_t ax;
+    ssize_t ay;
 
     struct sprite_placement* next;  // for linked list
+    struct sprite_placement* previous;
 };
 
 struct canvas {
@@ -25,6 +30,7 @@ struct canvas {
     color_t background_color;
 
     struct sprite_placement* head;  // store top sprite in linked list format
+    struct sprite_placement* tail;
 };
 
 
@@ -83,6 +89,9 @@ struct canvas* animate_create_canvas(size_t height, size_t width,
     new_canvas->height = height;
     new_canvas->width = width;
     new_canvas->background_color = background_color;
+
+    new_canvas->head = NULL;
+    new_canvas->tail = NULL;
     return new_canvas;
 }
 
@@ -192,10 +201,24 @@ struct sprite_placement* animate_place_sprite(struct canvas* canvas,
     placement->canvas = canvas;
     placement->x = x;
     placement->y = y;
+    placement->vx = 0;
+    placement->vy = 0;
+    placement->ax = 0;
+    placement->ay = 0;
+
+    placement->previous = NULL;
 
     // inserts sprite in top layer of canvas using linked list
-    placement->next = canvas->head;
-    canvas->head = placement;
+    if (canvas->head == NULL){
+        canvas->head = placement;
+        canvas->tail = placement;
+        placement->next = NULL;
+    } else {
+        struct sprite_placement* previous_head_sprite = canvas->head;
+        canvas->head = placement;
+        placement->next = previous_head_sprite;
+        previous_head_sprite->previous = placement;
+    }
 
     return placement;
 }
@@ -217,13 +240,45 @@ void animate_placement_bottom(struct sprite_placement* sprite_placement){
 }
 
 void animate_destroy_placement(struct sprite_placement* sprite_placement){
-    // TODO
+    if (sprite_placement == NULL){
+        return;
+    } else if (sprite_placement->canvas == NULL){
+        // sprite_placement not allocated to a canvas
+        free(sprite_placement);
+        return;
+    }
+
+    struct canvas* canvas = sprite_placement->canvas;
+    struct sprite_placement* previous_placement = sprite_placement->previous;
+    struct sprite_placement* next_placement = sprite_placement->next;
+
+    if (previous_placement == NULL && next_placement == NULL){
+        // placement was only node in list
+        canvas->head = NULL;
+        canvas->tail = NULL;
+    } else if (previous_placement == NULL){
+        // placement was head
+        canvas->head = next_placement;
+        next_placement->previous = NULL;
+    } else if (next_placement == NULL){
+        // placement was tail
+        canvas->tail = previous_placement;
+        previous_placement->next = NULL;
+    } else {
+        // placement was in middle of linked list
+        previous_placement->next = next_placement;
+        next_placement->previous = previous_placement;
+    }
+    free(sprite_placement);
 }
 
 void animate_set_animation_params(struct sprite_placement* sprite_placement,
                                   ssize_t vx, ssize_t vy,
                                   ssize_t ax, ssize_t ay){
-    // TODO
+    sprite_placement->vx = vx;
+    sprite_placement->vy = vy;
+    sprite_placement->ax = ax;
+    sprite_placement->ay = ay;
 }
 
 void animate_destroy_canvas(struct canvas* canvas){
@@ -254,36 +309,43 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
                             size_t frame_rate, void* buf) {
     
     color_t* frame_buf = (color_t*) buf;  // treating buff as array of color_t using casting
-
-    size_t total = canvas->width * canvas->height; 
-
-    for (size_t i = 0; i < total; i++){
+    
+    size_t canvas_total_size = canvas->width * canvas->height;
+    size_t time = frame/frame_rate;
+    
+    // fill background
+    for (size_t i = 0; i < canvas_total_size; i++){
         frame_buf[i] = canvas->background_color;
     }
 
     struct sprite_placement* placement = canvas->head;
 
-    while(placement){
+    while(placement != NULL){
         struct sprite* sprite = placement->sprite;
 
-        for (size_t sy = 0; sy < sprite->height; sy++){
-            for (size_t sx = 0; sx < sprite->width; sx++){
-                ssize_t cx = placement->x + sx; // canvas x and y
-                ssize_t cy = placement->y + sy;
+        ssize_t position_x = placement->x + placement->vx * time + 0.5 * placement->ax * time * time;
+        ssize_t position_y = placement->y + placement->vy * time + 0.5 * placement->ay * time * time;
 
-                if (cx < 0 || cy < 0 || 
-                    cx >= (ssize_t)canvas->width || 
-                    cy >= (ssize_t)canvas->height){
-                        continue;
+        for (size_t sprite_y = 0; sprite_y < sprite->height; sprite_y++){
+            for (size_t sprite_x = 0; sprite_x < sprite->width; sprite_x++){
+                ssize_t canvas_x = position_x + sprite_x;
+                ssize_t canvas_y = position_y + sprite_y;
+
+                if (canvas_x < 0 || canvas_y < 0 || 
+                    canvas_x >= canvas->width || 
+                    canvas_y >= canvas->height){
+                        continue; // ensure pixel in canvas bounds
                 }
                 
-                color_t pixel = sprite->pixels[sy * sprite->width + sx];
+                color_t pixel = sprite->pixels[sprite_y * sprite->width + sprite_x];
 
                 if ((pixel >> 24) == 0){
                     continue;  // skip transparent pixels
                 }
 
-                frame_buf[cy * canvas->width + cx] = pixel;
+                pixel = (pixel & 0x00FFFFFF) | (0xFF << 24); //set alpha value to max 255
+
+                frame_buf[canvas_y * canvas->width + canvas_x] = pixel;
             }
         }
         placement = placement->next;
