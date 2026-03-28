@@ -108,11 +108,16 @@ struct sprite* animate_create_circle(size_t radius, color_t c, bool filled) {
         return NULL;
     }
 
-    size_t diameter = radius * 2;
+    size_t diameter = radius * 2 + 1;
 
     circle->width = diameter;
     circle->height = diameter;
     circle->pixels = calloc(diameter * diameter, sizeof(color_t));
+
+    color_t color = c;
+    if ((color >> 24) != 0){
+        color = (color & 0x00FFFFFF) | (0xFF << 24); // for non-transparent shape, set to max alpha 255
+    }
 
     if (circle->pixels == NULL){
         free(circle);
@@ -126,7 +131,7 @@ struct sprite* animate_create_circle(size_t radius, color_t c, bool filled) {
                 ssize_t x = (ssize_t)col - (ssize_t)radius;
 
                 if (x * x + y * y <= (ssize_t)(radius * radius)){
-                    circle->pixels[row * diameter + col] = c;
+                    circle->pixels[row * diameter + col] = color;
                 }
             }
         }
@@ -147,6 +152,11 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
     rectangle->width = width;
     rectangle->height = height;
 
+    color_t color = c;
+    if ((color >> 24) != 0){
+        color = (color & 0x00FFFFFF) | (0xFF << 24); // for non-transparent shape, set to max alpha 255
+    }
+
     // using calloc to set memeory to 0, important for non-filled rectangle
     rectangle->pixels = calloc(width * height, sizeof(color_t));
     if (rectangle->pixels == NULL) {
@@ -158,7 +168,7 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
         for (size_t row = 0; row < height; row++){
             for (size_t col = 0; col < width; col++){
                 size_t index = row * width + col;
-                rectangle->pixels[index] = c;
+                rectangle->pixels[index] = color;
             }
         }
     } else {
@@ -179,12 +189,12 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
 
 bool animate_destroy_sprite(struct sprite* sprite) {
     if (sprite == NULL){
-        return 0;
+        return 1;
     }
 
     free(sprite->pixels);
     free(sprite);
-    return 1;
+    return 0;
 }
 
 struct sprite_placement* animate_place_sprite(struct canvas* canvas,
@@ -337,13 +347,16 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
     
     size_t canvas_total_size = canvas->width * canvas->height;
     size_t time = frame/frame_rate;
+
+    color_t background_color = canvas->background_color;
+    background_color = (background_color & 0x00FFFFFF) | (0xFF << 24);
     
     // fill background
     for (size_t i = 0; i < canvas_total_size; i++){
-        frame_buf[i] = canvas->background_color;
+        frame_buf[i] = background_color;
     }
 
-    struct sprite_placement* placement = canvas->head;
+    struct sprite_placement* placement = canvas->tail;
 
     while(placement != NULL){
         struct sprite* sprite = placement->sprite;
@@ -373,7 +386,7 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
                 frame_buf[canvas_y * canvas->width + canvas_x] = pixel;
             }
         }
-        placement = placement->next;
+        placement = placement->previous;
     }
 
 }
