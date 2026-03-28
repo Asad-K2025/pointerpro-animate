@@ -232,11 +232,36 @@ void animate_placement_down(struct sprite_placement* sprite_placement){
 }
 
 void animate_placement_top(struct sprite_placement* sprite_placement){
-    // TODO
+    if (sprite_placement == NULL){
+        return;
+    }
+
+    struct canvas* canvas = sprite_placement->canvas;
+    struct sprite_placement* previous_head = canvas->head;
+
+    if (canvas->head == previous_head){
+        return; // event where placement is already at top
+    }
+
+    canvas->head = sprite_placement;
+    sprite_placement->next = previous_head;
+    previous_head->previous = sprite_placement;
 }
 
 void animate_placement_bottom(struct sprite_placement* sprite_placement){
-    // TODO
+    if (sprite_placement == NULL){
+        return;
+    }
+
+    struct canvas* canvas = sprite_placement->canvas;
+    struct sprite_placement* previous_tail = canvas->tail;
+
+    if (canvas->tail == sprite_placement){
+        return; // in event where placement is already at bottom
+    }
+    canvas->tail = sprite_placement;
+    sprite_placement->previous = previous_tail;
+    previous_tail->next = sprite_placement;
 }
 
 void animate_destroy_placement(struct sprite_placement* sprite_placement){
