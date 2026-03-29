@@ -312,12 +312,30 @@ void animate_placement_top(struct sprite_placement* sprite_placement){
     struct canvas* canvas = sprite_placement->canvas;
     struct sprite_placement* previous_head = canvas->head;
 
-    if (canvas->head == previous_head){
+    if (sprite_placement == previous_head){
         return; // event where placement is already at top
+    }
+
+    struct sprite_placement* previous_node = sprite_placement->previous;
+    struct sprite_placement* next_node = sprite_placement->next;
+
+    if (previous_node == NULL){
+        // current node was head
+        next_node->previous = NULL;
+        canvas->head = next_node;
+    } else if (next_node == NULL){
+        // current node was tail
+        previous_node->next = NULL;
+        canvas->tail = previous_node;
+    } else{
+        // ensure nodes infront and behind current are connected
+        previous_node->next = next_node;
+        next_node->previous = previous_node;
     }
 
     canvas->head = sprite_placement;
     sprite_placement->next = previous_head;
+    sprite_placement->previous = NULL;
     previous_head->previous = sprite_placement;
 }
 
@@ -329,11 +347,30 @@ void animate_placement_bottom(struct sprite_placement* sprite_placement){
     struct canvas* canvas = sprite_placement->canvas;
     struct sprite_placement* previous_tail = canvas->tail;
 
-    if (canvas->tail == sprite_placement){
+    if (sprite_placement == previous_tail){
         return; // in event where placement is already at bottom
     }
+
+    struct sprite_placement* previous_node = sprite_placement->previous;
+    struct sprite_placement* next_node = sprite_placement->next;
+
+    if (previous_node == NULL){
+        // current node was head
+        next_node->previous = NULL;
+        canvas->head = next_node;
+    } else if (next_node == NULL){
+        // current node was tail
+        previous_node->next = NULL;
+        canvas->tail = previous_node;
+    } else{
+        // ensure nodes infront and behind current are connected
+        previous_node->next = next_node;
+        next_node->previous = previous_node;
+    }
+
     canvas->tail = sprite_placement;
     sprite_placement->previous = previous_tail;
+    sprite_placement->next = NULL;
     previous_tail->next = sprite_placement;
 }
 
@@ -411,7 +448,7 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
     color_t* frame_buf = (color_t*) buf;  // treating buff as array of color_t using casting
     
     size_t canvas_total_size = canvas->width * canvas->height;
-    size_t time = frame/frame_rate;
+    double time = (double)frame/(double)frame_rate;
 
     color_t background_color = canvas->background_color;
     background_color = (background_color & 0x00FFFFFF) | (0xFF << 24);
@@ -431,12 +468,12 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
 
         for (size_t sprite_y = 0; sprite_y < sprite->height; sprite_y++){
             for (size_t sprite_x = 0; sprite_x < sprite->width; sprite_x++){
-                ssize_t canvas_x = position_x + sprite_x;
-                ssize_t canvas_y = position_y + sprite_y;
+                ssize_t canvas_x = position_x + (ssize_t)sprite_x;
+                ssize_t canvas_y = position_y + (ssize_t)sprite_y;
 
                 if (canvas_x < 0 || canvas_y < 0 || 
-                    canvas_x >= canvas->width || 
-                    canvas_y >= canvas->height){
+                    canvas_x >= (ssize_t)canvas->width || 
+                    canvas_y >= (ssize_t)canvas->height){
                         continue; // ensure pixel in canvas bounds
                 }
                 
