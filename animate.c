@@ -7,6 +7,8 @@ struct sprite {
     size_t width;
     size_t height;
     color_t* pixels;
+
+    size_t placement_count;
 };
 
 struct sprite_placement {
@@ -126,6 +128,7 @@ struct sprite* animate_create_sprite(const char* file) {
 
     sprite->width = header_v5.bV5Width;
     sprite->height = header_v5.bV5Height;
+    sprite->placement_count = 0;
     sprite->pixels = malloc(sprite->width * sprite->height * sizeof(color_t));
 
     if (sprite->pixels == NULL){
@@ -165,6 +168,7 @@ struct sprite* animate_create_circle(size_t radius, color_t c, bool filled) {
 
     circle->width = diameter;
     circle->height = diameter;
+    circle->placement_count = 0;
     circle->pixels = calloc(diameter * diameter, sizeof(color_t));
 
     color_t color = c;
@@ -204,6 +208,7 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
 
     rectangle->width = width;
     rectangle->height = height;
+    rectangle->placement_count = 0;
 
     color_t color = c;
     if ((color >> 24) != 0){
@@ -242,7 +247,11 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
 
 bool animate_destroy_sprite(struct sprite* sprite) {
     if (sprite == NULL){
-        return 1;
+        return 0;
+    }
+
+    if (sprite->placement_count != 0){
+        return 1; // sprite is still in use
     }
 
     free(sprite->pixels);
@@ -261,6 +270,7 @@ struct sprite_placement* animate_place_sprite(struct canvas* canvas,
     }
 
     placement->sprite = sprite;
+    sprite->placement_count++;
     placement->canvas = canvas;
     placement->x = x;
     placement->y = y;
@@ -339,6 +349,7 @@ void animate_destroy_placement(struct sprite_placement* sprite_placement){
     struct canvas* canvas = sprite_placement->canvas;
     struct sprite_placement* previous_placement = sprite_placement->previous;
     struct sprite_placement* next_placement = sprite_placement->next;
+    sprite_placement->sprite->placement_count--;
 
     if (previous_placement == NULL && next_placement == NULL){
         // placement was only node in list
@@ -378,6 +389,7 @@ void animate_destroy_canvas(struct canvas* canvas){
 
     while (current != NULL){
         struct sprite_placement* next = current->next;
+        current->sprite->placement_count--;
         free(current);
         current = next;
     }
