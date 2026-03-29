@@ -96,8 +96,61 @@ struct canvas* animate_create_canvas(size_t height, size_t width,
 }
 
 struct sprite* animate_create_sprite(const char* file) {
-    // TODO
-    return NULL;
+    FILE* file_pointer = fopen(file, "rb");
+    if (file_pointer == NULL){
+        return NULL;
+    }
+
+    struct bitmap_header header;
+    fread(&header, sizeof(header), 1, file_pointer);
+
+    if (header.magic[0] != 'B' || header.magic[1] !='M'){
+        fclose(file_pointer);
+        return NULL;
+    }
+
+    struct bitmapv5_header header_v5;
+    fread(&header_v5, sizeof(header_v5), 1, file_pointer);
+
+    if (header_v5.bV5BitCount != 32) {
+        fclose(file_pointer);
+        return NULL;
+    }
+
+    struct sprite* sprite = malloc(sizeof(struct sprite));
+
+    if (sprite == NULL){
+        fclose(file_pointer);
+        return NULL;
+    }
+
+    sprite->width = header_v5.bV5Width;
+    sprite->height = header_v5.bV5Height;
+    sprite->pixels = malloc(sprite->width * sprite->height * sizeof(color_t));
+
+    if (sprite->pixels == NULL){
+        fclose(file_pointer);
+        free(sprite);
+        return NULL;
+    }
+
+    fseek(file_pointer, header.pixel_offset, SEEK_SET);  // jump to pixel data
+    for (size_t y = 0; y < sprite->height; y++){
+        for (size_t x = 0; x < sprite->width; x++){
+
+            uint8_t b = fgetc(file_pointer);
+            uint8_t g = fgetc(file_pointer);
+            uint8_t r = fgetc(file_pointer);
+            uint8_t a = fgetc(file_pointer);
+
+            size_t flipped_y = sprite->height - 1 - y; // used as y is unsigned, so reversing till 0 means it will wrap to large number
+
+            sprite->pixels[flipped_y * sprite->width + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    fclose(file_pointer);
+    return sprite;
 }
 
 struct sprite* animate_create_circle(size_t radius, color_t c, bool filled) {
