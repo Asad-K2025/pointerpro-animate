@@ -232,13 +232,13 @@ struct sprite* animate_create_rectangle(size_t width, size_t height,
     } else {
         // only fill the borders of the rectangle since filled is false
         for (size_t col = 0; col < width; col++){ // fill top and bottom rows        
-            rectangle->pixels[col] = c;
-            rectangle->pixels[(height - 1) * width + col] = c;
+            rectangle->pixels[col] = color;
+            rectangle->pixels[(height - 1) * width + col] = color;
         }
 
         for (size_t row = 1; row < height - 1; row++) {
-            rectangle->pixels[row * width] = c;  // left column
-            rectangle->pixels[row * width + (width - 1)] = c;  // right column
+            rectangle->pixels[row * width] = color;  // left column
+            rectangle->pixels[row * width + (width - 1)] = color;  // right column
         }
     }
 
@@ -297,7 +297,40 @@ struct sprite_placement* animate_place_sprite(struct canvas* canvas,
 }
 
 void animate_placement_up(struct sprite_placement* sprite_placement){
-    // TODO COMP9017
+    if (sprite_placement == NULL){
+        return;
+    }
+
+    struct canvas* canvas = sprite_placement->canvas;
+
+    struct sprite_placement* previous_node = sprite_placement->previous;
+    struct sprite_placement* next_node = sprite_placement->next;
+
+    if (previous_node == NULL){
+        // current node was head
+        return;
+    } else if (next_node == NULL){
+        // current node was tail, updating pointers correctly
+        previous_node->next = NULL;
+        canvas->tail = previous_node;
+    } else{
+        // ensure nodes infront and behind current are connected
+        previous_node->next = next_node;
+        next_node->previous = previous_node;
+    }
+
+    sprite_placement->next = previous_node;
+    struct sprite_placement* new_previous_node = previous_node->previous;
+    previous_node->previous = sprite_placement;
+
+    if (new_previous_node == NULL){
+        // sprite_placement was second node in list
+        sprite_placement->previous = NULL;
+        canvas->head = sprite_placement;
+    } else {
+        sprite_placement->previous = new_previous_node;
+        new_previous_node->next = sprite_placement;
+    }
 }
 
 void animate_placement_down(struct sprite_placement* sprite_placement){
@@ -319,11 +352,7 @@ void animate_placement_top(struct sprite_placement* sprite_placement){
     struct sprite_placement* previous_node = sprite_placement->previous;
     struct sprite_placement* next_node = sprite_placement->next;
 
-    if (previous_node == NULL){
-        // current node was head
-        next_node->previous = NULL;
-        canvas->head = next_node;
-    } else if (next_node == NULL){
+    if (next_node == NULL){
         // current node was tail
         previous_node->next = NULL;
         canvas->tail = previous_node;
@@ -358,10 +387,6 @@ void animate_placement_bottom(struct sprite_placement* sprite_placement){
         // current node was head
         next_node->previous = NULL;
         canvas->head = next_node;
-    } else if (next_node == NULL){
-        // current node was tail
-        previous_node->next = NULL;
-        canvas->tail = previous_node;
     } else{
         // ensure nodes infront and behind current are connected
         previous_node->next = next_node;
