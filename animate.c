@@ -334,7 +334,40 @@ void animate_placement_up(struct sprite_placement* sprite_placement){
 }
 
 void animate_placement_down(struct sprite_placement* sprite_placement){
-    // TODO COMP9017
+    if (sprite_placement == NULL){
+        return;
+    }
+
+    struct canvas* canvas = sprite_placement->canvas;
+
+    struct sprite_placement* previous_node = sprite_placement->previous;
+    struct sprite_placement* next_node = sprite_placement->next;
+
+    if (previous_node == NULL){
+        // current node was head, updating pointers correctly
+        next_node->previous = NULL;
+        canvas->head = next_node;
+    } else if (next_node == NULL){
+        // current node was tail
+        return;
+    } else{
+        // ensure nodes infront and behind current are connected
+        previous_node->next = next_node;
+        next_node->previous = previous_node;
+    }
+
+    sprite_placement->previous = next_node;
+    struct sprite_placement* new_next_node = next_node->next;
+    next_node->next = sprite_placement;
+
+    if (new_next_node == NULL){
+        // sprite_placement was second last node in list
+        sprite_placement->next = NULL;
+        canvas->tail = sprite_placement;
+    } else {
+        sprite_placement->next = new_next_node;
+        new_next_node->previous = sprite_placement;
+    }
 }
 
 void animate_placement_top(struct sprite_placement* sprite_placement){
