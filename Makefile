@@ -6,8 +6,11 @@ default: animate.o test_simple
 test_simple: main_simple.c animate.o | animate.h
 	gcc $^ -o $@
 
-animate.o: animate.c | animate.h
-	gcc -fPIC -c $^ -o $@
+animate.o: animate.c sprite.c | animate.h types.h
+	gcc -fPIC -c animate.c -o animate_main.o
+	gcc -fPIC -c sprite.c -o sprite_main.o
+	ld -r animate_main.o sprite_main.o -o animate.o
+	rm animate_main.o sprite_main.o
 
 
 
