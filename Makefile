@@ -1,53 +1,15 @@
-# You may modify this file as you wish, but `make animate.o` should always
-# compile all necessary code into a single object file.
+default: animate_server animate_client
 
-default: animate.o test_simple
+libanimate:
+	@if [ ! -d $@ ]; then \
+		echo "ERROR: libanimate not found" > /dev/stderr; \
+		echo "Download and unzip libanimate.zip from P2 resources" > /dev/stderr; \
+		false; \
+	fi
 
-test_simple: main_simple.c animate.o | animate.h
+
+animate_server: animate_server.c | libanimate
+	gcc $^ -I libanimate/include -Llibanimate/lib -lanimate -o $@
+
+animate_client: animate_client.c
 	gcc $^ -o $@
-
-animate.o: animate.c sprite.c | animate.h types.h
-	gcc -fPIC -c animate.c -o animate_main.o
-	gcc -fPIC -c sprite.c -o sprite_main.o
-	ld -r animate_main.o sprite_main.o -o animate.o
-	rm animate_main.o sprite_main.o
-
-
-
-
-API_DOC=PointerProAnimateRefman.pdf
-doc: $(API_DOC)
-
-# Generates a doxygen configuration file
-Doxyfile:
-	doxygen -g
-	# Adjust params
-	sed -i 's/\(GENERATE_HTML *= *\).*/\1NO/g' $@
-	sed -i 's/\(EXTRACT_ALL *= *\).*/\1YES/g' $@
-	sed -i 's/\(INPUT *= *\).*/\1"animate.h"/g' $@
-	sed -i 's/\(PROJECT_NAME *= *\).*/\1"PointerPro Animate"/g' $@
-	sed -i 's/\(OPTIMIZE_OUTPUT_FOR_C *= *\).*/\1YES/g' $@
-
-$(API_DOC): DOC_MAKEFILE=latex/Makefile
-$(API_DOC): DOC_TOP=latex/refman.tex
-$(API_DOC): Doxyfile | animate.h
-	doxygen $^
-	# Don't index
-	sed -i 's/\t$$(MKIDX/\t#/g'             $(DOC_MAKEFILE)
-	# Remove some dead chapters and ToC
-	sed -i 's/^ *\\clearemptydoublepage//g' $(DOC_TOP)
-	sed -i 's/^ *\\tableofcontents//g'      $(DOC_TOP)
-	sed -i 's/^ *\\chapter{File Index}//g'  $(DOC_TOP)
-	sed -i 's/^ *\\input{files}//g'         $(DOC_TOP)
-	cd latex && make
-	cp latex/refman.pdf $@
-
-clean:
-	rm -f animate.o
-	rm -f Doxyfile
-	rm -rf latex
-
-clobber: clean
-	rm -f $(API_DOC)
-
-.PHONY: doc clean clobber default
