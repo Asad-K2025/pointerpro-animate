@@ -9,7 +9,9 @@ libanimate:
 
 
 animate_server: animate_server.c | libanimate
-	gcc $^ -I libanimate/include -Llibanimate/lib -lanimate -o $@
+	gcc $^ -I libanimate/include -Llibanimate/lib -lanimate -o $@ -Werror
 
 animate_client: animate_client.c
-	gcc $^ -o $@
+	gcc $^ -o $@ -Werror
+
+

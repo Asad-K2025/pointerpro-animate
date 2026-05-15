@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <string.h>
 
 volatile sig_atomic_t recieved_signal = 0;
 
