@@ -38,6 +38,37 @@ int main(int argc, char** argv, char** envp) {
 
     printf("Connected\n");
 
+    int logged_in = 0;
+    char input_buffer[100];
+
+    while (fgets(input_buffer, sizeof(input_buffer), stdin)){
+
+        if (!logged_in && strncmp(input_buffer, "Login ", 6) != 0){
+            printf("not logged in\n");
+            continue;
+        }
+
+        write(fd_c2s, input_buffer, strlen(input_buffer));
+
+        if (strncmp(input_buffer, "Login ", 6) == 0){
+            char response_buffer[128];
+            ssize_t bytes_read = read(fd_s2c, response_buffer, sizeof(response_buffer));
+            response_buffer[bytes_read] = '\0';
+
+            if (strncmp(response_buffer, "Reject ", 7) == 0){
+                response_buffer[strcspn(response_buffer, "\n")] = '\0';
+                printf("%s\n", response_buffer);
+                break;
+            } else {
+                char username[64];
+                sscanf(input_buffer, "Login %s", username);
+                int balance = atoi(response_buffer);
+                printf("Welcome %s. Your balance is %d\n", username, balance);
+                logged_in = 1;
+            } 
+        }
+    }
+
     close(fd_c2s);
     close(fd_s2c);
 

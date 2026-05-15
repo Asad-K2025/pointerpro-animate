@@ -1,3 +1,5 @@
 *.o
 animate
 /libanimate
+animate_client
+animate_server
