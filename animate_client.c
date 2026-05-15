@@ -51,7 +51,7 @@ int main(int argc, char** argv, char** envp) {
 
         write(fd_c2s, input_buffer, strlen(input_buffer));
 
-        if (strncmp(input_buffer, "Login ", 6) == 0){
+        if (strncmp(input_buffer, "Login", 5) == 0){
             char response_buffer[128];
             ssize_t bytes_read = read(fd_s2c, response_buffer, sizeof(response_buffer));
             response_buffer[bytes_read] = '\0';
@@ -62,7 +62,7 @@ int main(int argc, char** argv, char** envp) {
                 break;
             } else {
                 char username[64];
-                sscanf(input_buffer, "Login %s", username);
+                sscanf(input_buffer, "%*s %s", username);
                 int balance = atoi(response_buffer);
                 printf("Welcome %s. Your balance is %d\n", username, balance);
                 logged_in = 1;
