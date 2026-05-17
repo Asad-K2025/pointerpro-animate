@@ -112,7 +112,7 @@ int main(int argc, char** argv, char** envp) {
         } 
         
         // check disconnect after the above if statement to first handle server repsonse
-        if (strcmp(input_buffer, "Disconnect") == 0) {
+        if (strncmp(input_buffer, "Disconnect", 10) == 0) {
             break;
         }   
     }
