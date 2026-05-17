@@ -93,26 +93,27 @@ int process_rpc_command(int fd_s2c, char* command_line){
     } else if (strcmp(cmd, "create_canvas") == 0) {
         char* width_str = strtok_r(NULL, " ", &saveptr);
         char* height_str = strtok_r(NULL, " ", &saveptr);
-        char* duration_str = strtok_r(NULL, " ", &saveptr);
+        char* color_str = strtok_r(NULL, " ", &saveptr);
 
-        if (width_str == NULL || height_str == NULL || duration_str == NULL) {
+        if (width_str == NULL || height_str == NULL || color_str == NULL) {
             write(fd_s2c, "-1\n", 3);
             return 0;
         }
 
         int width = atoi(width_str);
         int height = atoi(height_str);
-        int duration = atoi(duration_str);
+        int color = atoi(color_str);
 
-        if (width <= 0 || height <= 0 || duration < 0) {
+        if (width <= 0 || height <= 0 || color < 0) {
             write(fd_s2c, "-2\n", 3);
             return 0;
         }
 
-        struct canvas* new_canvas = animate_create_canvas(width, height, duration);
-        
+        struct canvas* new_canvas = animate_create_canvas(width, height, color);
+
         if (new_canvas == NULL) {
             write(fd_s2c, "-3\n", 3);
+            return 0;
         }
 
         uint64_t canvas_handle = (uint64_t)new_canvas;
@@ -188,9 +189,6 @@ int main(int argc, char** argv, char** envp) {
             unlink(fifo_s2c);
         }
     }
-
-    struct canvas* canvas = animate_create_canvas(100,100,0);
-    animate_destroy_canvas(canvas);
     
     return 0;
 }

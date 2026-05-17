@@ -45,19 +45,40 @@ int main(int argc, char** argv, char** envp) {
 
     while (fgets(input_buffer, sizeof(input_buffer), stdin)){
 
+        size_t len = strlen(input_buffer);
+        if (len > 0 && input_buffer[len - 1] == '\n'){
+            input_buffer[len - 1] = '\0';
+        }
+
+        if (strlen(input_buffer) == 0){
+            continue;
+        }
+
         if (!logged_in && strncmp(input_buffer, "Login ", 6) != 0){
             printf("Not logged in\n");
             fflush(stdout);
             continue;
         }
 
-        write(fd_c2s, input_buffer, strlen(input_buffer));
+        char send_buffer[128];
+
+        snprintf(send_buffer, sizeof(send_buffer), "%s\n", input_buffer);
+        write(fd_c2s, send_buffer, strlen(send_buffer));
+
+        char response_buffer[128];
+        ssize_t bytes_read = read(fd_s2c, response_buffer, sizeof(response_buffer));
+        
+        if (bytes_read <= 0) {
+            break;  // server disconnected or closed pipe
+        }
+        
+        response_buffer[bytes_read] = '\0';
+
+        if (bytes_read > 0 && response_buffer[bytes_read - 1] == '\n') {
+            response_buffer[bytes_read - 1] = '\0';
+        }
 
         if (strncmp(input_buffer, "Login", 5) == 0){
-            char response_buffer[128];
-            ssize_t bytes_read = read(fd_s2c, response_buffer, sizeof(response_buffer));
-            response_buffer[bytes_read] = '\0';
-
             if (strncmp(response_buffer, "Reject ", 7) == 0){
                 response_buffer[strcspn(response_buffer, "\n")] = '\0';
                 printf("%s\n", response_buffer);
@@ -71,6 +92,21 @@ int main(int argc, char** argv, char** envp) {
                 fflush(stdout);
                 logged_in = 1;
             }
+        } else {
+            if (strcmp(response_buffer, "-1") == 0) {
+                printf("RPC Failed\n");
+            } else if (strcmp(response_buffer, "-2") == 0) {
+                printf("Value error\n");
+            } else if (strcmp(response_buffer, "-3") == 0) {
+                printf("Internal error\n");
+            } else if (strncmp(response_buffer, "0 ", 2) == 0) { // writign to file calls
+                printf("Success %s\n", response_buffer + 2);
+            } else if (strcmp(response_buffer, "0") == 0) {
+                printf("Success\n");
+            } else {
+                printf("%s\n", response_buffer);
+            }
+            fflush(stdout);
         }
     }
     
