@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdlib.h>
 
 volatile sig_atomic_t client_requested = 0;
 volatile pid_t pending_client_pid = 0;
@@ -24,7 +25,7 @@ void strip_newline(char* str){
 }
 
 int process_rpc_command(int fd_s2c, char* command_line){
-    // after processing, return 1 for should disconnect, 0 otherwise
+    // after processing, return 1 for should_disconnect, 0 otherwise
     strip_newline(command_line);
 
     char* saveptr;
@@ -88,6 +89,42 @@ int process_rpc_command(int fd_s2c, char* command_line){
             write(fd_s2c, response, strlen(response));
             return 1;
         }
+    
+    } else if (strcmp(cmd, "create_canvas") == 0) {
+        char* width_str = strtok_r(NULL, " ", &saveptr);
+        char* height_str = strtok_r(NULL, " ", &saveptr);
+        char* duration_str = strtok_r(NULL, " ", &saveptr);
+
+        if (width_str == NULL || height_str == NULL || duration_str == NULL) {
+            write(fd_s2c, "-1\n", 3);
+            return 0;
+        }
+
+        int width = atoi(width_str);
+        int height = atoi(height_str);
+        int duration = atoi(duration_str);
+
+        if (width <= 0 || height <= 0 || duration < 0) {
+            write(fd_s2c, "-2\n", 3);
+            return 0;
+        }
+
+        struct canvas* new_canvas = animate_create_canvas(width, height, duration);
+        
+        if (new_canvas == NULL) {
+            write(fd_s2c, "-3\n", 3);
+        }
+
+        uint64_t canvas_handle = (uint64_t)new_canvas;
+
+        char response[128];
+        sprintf(response, "0 %lu\n", canvas_handle);
+        write(fd_s2c, response, strlen(response));
+        return 0;
+
+    } else if (strcmp(cmd, "Disconnect") == 0){
+        write(fd_s2c, "0\n", 2);
+        return 1;
     }
     // elifs for other commands
 }
