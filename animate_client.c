@@ -92,6 +92,7 @@ int main(int argc, char** argv, char** envp) {
                 fflush(stdout);
                 logged_in = 1;
             }
+
         } else {
             if (strcmp(response_buffer, "-1") == 0) {
                 printf("RPC Failed\n");
@@ -107,7 +108,13 @@ int main(int argc, char** argv, char** envp) {
                 printf("%s\n", response_buffer);
             }
             fflush(stdout);
-        }
+
+        } 
+        
+        // check disconnect after the above if statement to first handle server repsonse
+        if (strcmp(input_buffer, "Disconnect") == 0) {
+            break;
+        }   
     }
     
     close(fd_c2s);
