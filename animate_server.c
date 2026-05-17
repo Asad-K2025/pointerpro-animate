@@ -16,6 +16,82 @@ void handle_sigusr1(int singal_number, siginfo_t* info, void* context){
     client_requested = 1;
 }
 
+void strip_newline(char* str){
+    size_t len = strlen(str);
+    if (len > 0 && str[len - 1] == '\n'){
+        str[len - 1] = '\0';
+    }
+}
+
+int process_rpc_command(int fd_s2c, char* command_line){
+    // after processing, return 1 for should disconnect, 0 otherwise
+    strip_newline(command_line);
+
+    char* saveptr;
+    char* cmd = strtok_r(command_line, " ", &saveptr);
+
+    if (cmd == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    if (strcmp(cmd, "Login") == 0){
+        char* username = strtok_r(NULL, " ", &saveptr);
+        if (username == NULL) {
+            write(fd_s2c, "-2\n", 3);
+            return 0;
+        }
+
+        if (strlen(username) > 32){
+            write(fd_s2c, "-2\n", 3);
+            return 0;
+        }
+
+        FILE* file = fopen("users.txt", "r");
+        if (file == NULL) {
+            write(fd_s2c, "-3\n", 3);
+            return 1;
+        }
+
+        char line[256];
+        int found = 0;
+        int balance = 0;
+
+        while (fgets(line, sizeof(line), file)) {
+            char current_user[64];
+            int current_balance;
+            if (sscanf(line, "%s %d", current_user, &current_balance) == 2) {
+                if (strcmp(current_user, username) == 0) {
+                    balance = current_balance;
+                    found = 1;
+                    break;
+                }
+            }
+        }
+        
+        fclose(file);
+
+        char response[128];
+
+        if (found) {
+            if (balance > 0) {
+                sprintf(response, "%d\n", balance);
+                write(fd_s2c, response, strlen(response));
+                return 0;
+            } else {
+                sprintf(response, "Reject BALANCE\n");
+                write(fd_s2c, response, strlen(response));
+                return 1;
+            }
+        } else {
+            sprintf(response, "Reject UNAUTHORISED\n");
+            write(fd_s2c, response, strlen(response));
+            return 1;
+        }
+    }
+    // elifs for other commands
+}
+
 int main(int argc, char** argv, char** envp) {
 
     pid_t process_id = getpid();
@@ -28,7 +104,6 @@ int main(int argc, char** argv, char** envp) {
     sigaction(SIGUSR1, &sa, NULL);
 
     while (1){
-        
         pause();
 
         if (client_requested) {
@@ -54,58 +129,26 @@ int main(int argc, char** argv, char** envp) {
             int fd_s2c = open(fifo_s2c, O_WRONLY);
 
             char buffer[128];
+            ssize_t bytes_read;
 
-            ssize_t bytes_read = read(fd_c2s, buffer, sizeof(buffer) - 1);
+            // while used for continuous command handling
+            while ((bytes_read = read(fd_c2s, buffer, sizeof(buffer) - 1)) > 0) {
+                if (bytes_read > 0){
+                    buffer[bytes_read] = '\0';
+                }
 
-            buffer[bytes_read] = '\0';
-
-            char username[64];
-            sscanf(buffer, "Login %s", username);
-
-            FILE* file = fopen("users.txt", "r");
-            char line[256];
-            int found = 0;
-            int balance = 0;
-
-            while (fgets(line, sizeof(line), file)) {
-                char current_user[64];
-                int current_balance;
-                if (sscanf(line, "%s %d", current_user, &current_balance) == 2) {
-                    if (strcmp(current_user, username) == 0) {
-                        balance = current_balance;
-                        found = 1;
-                        break;
-                    }
+                int should_disconnect = process_rpc_command(fd_s2c, buffer);
+                if (should_disconnect){
+                    break;
                 }
             }
             
-            fclose(file);
-
-            char response[128];
-            int should_disconnect = 0;
-
-            if (found) {
-                if (balance > 0) {
-                    sprintf(response, "%d\n", balance);
-                    write(fd_s2c, response, strlen(response));
-                } else {
-                    sprintf(response, "Reject BALANCE\n");
-                    write(fd_s2c, response, strlen(response));
-                    should_disconnect = 1;
-                }
-            } else {
-                sprintf(response, "Reject UNAUTHORISED\n");
-                write(fd_s2c, response, strlen(response));
-                should_disconnect = 1;
-            }
-
-            if (should_disconnect){
-                sleep(1);
-                close(fd_c2s);
-                close(fd_s2c);
-                unlink(fifo_c2s);
-                unlink(fifo_s2c);
-            }
+            // disconnection of client
+            sleep(1);
+            close(fd_c2s);
+            close(fd_s2c);
+            unlink(fifo_c2s);
+            unlink(fifo_s2c);
         }
     }
 

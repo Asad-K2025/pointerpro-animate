@@ -46,7 +46,7 @@ int main(int argc, char** argv, char** envp) {
     while (fgets(input_buffer, sizeof(input_buffer), stdin)){
 
         if (!logged_in && strncmp(input_buffer, "Login ", 6) != 0){
-            printf("not logged in\n");
+            printf("Not logged in\n");
             fflush(stdout);
             continue;
         }
@@ -65,7 +65,7 @@ int main(int argc, char** argv, char** envp) {
                 break;
             } else {
                 char username[64];
-                sscanf(input_buffer, "%*s %s", username);
+                sscanf(input_buffer, "Login %s", username);
                 int balance = atoi(response_buffer);
                 printf("Welcome %s. Your balance is %d\n", username, balance);
                 fflush(stdout);
