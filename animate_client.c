@@ -38,6 +38,7 @@ int main(int argc, char** argv, char** envp) {
     int fd_s2c = open(fifo_s2c, O_RDONLY);
 
     printf("Connected\n");
+    fflush(stdout);
 
     int logged_in = 0;
     char input_buffer[100];
@@ -46,6 +47,7 @@ int main(int argc, char** argv, char** envp) {
 
         if (!logged_in && strncmp(input_buffer, "Login ", 6) != 0){
             printf("not logged in\n");
+            fflush(stdout);
             continue;
         }
 
@@ -59,17 +61,19 @@ int main(int argc, char** argv, char** envp) {
             if (strncmp(response_buffer, "Reject ", 7) == 0){
                 response_buffer[strcspn(response_buffer, "\n")] = '\0';
                 printf("%s\n", response_buffer);
+                fflush(stdout);
                 break;
             } else {
                 char username[64];
                 sscanf(input_buffer, "%*s %s", username);
                 int balance = atoi(response_buffer);
                 printf("Welcome %s. Your balance is %d\n", username, balance);
+                fflush(stdout);
                 logged_in = 1;
-            } 
+            }
         }
     }
-
+    
     close(fd_c2s);
     close(fd_s2c);
 
