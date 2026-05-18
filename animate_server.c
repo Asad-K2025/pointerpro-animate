@@ -17,16 +17,106 @@ void handle_sigusr1(int singal_number, siginfo_t* info, void* context){
     client_requested = 1;
 }
 
-void strip_newline(char* str){
-    size_t len = strlen(str);
-    if (len > 0 && str[len - 1] == '\n'){
-        str[len - 1] = '\0';
+int handle_login(int fd_s2c, char* saveptr){
+    char* username = strtok_r(NULL, " ", &saveptr);
+    if (username == NULL) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    if (strlen(username) > 32){
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    FILE* file = fopen("users.txt", "r");
+    if (file == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 1;
+    }
+
+    char line[256];
+    int found = 0;
+    int balance = 0;
+
+    while (fgets(line, sizeof(line), file)) {
+        char current_user[64];
+        int current_balance;
+        if (sscanf(line, "%s %d", current_user, &current_balance) == 2) {
+            if (strcmp(current_user, username) == 0) {
+                balance = current_balance;
+                found = 1;
+                break;
+            }
+        }
+    }
+    
+    fclose(file);
+
+    char response[128];
+
+    if (found) {
+        if (balance > 0) {
+            sprintf(response, "%d\n", balance);
+            write(fd_s2c, response, strlen(response));
+            return 0;
+        } else {
+            sprintf(response, "Reject BALANCE\n");
+            write(fd_s2c, response, strlen(response));
+            return 1;
+        }
+    } else {
+        sprintf(response, "Reject UNAUTHORISED\n");
+        write(fd_s2c, response, strlen(response));
+        return 1;
     }
 }
 
+int handle_create_canvas(int fd_s2c, char* saveptr) {
+    char* width_str = strtok_r(NULL, " ", &saveptr);
+    char* height_str = strtok_r(NULL, " ", &saveptr);
+    char* color_str = strtok_r(NULL, " ", &saveptr);
+
+    if (width_str == NULL || height_str == NULL || color_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* width_end_pointer;
+    char* height_end_pointer;
+    char* color_end_pointer;
+
+    long width = strtol(width_str, &width_end_pointer, 10);
+    long height = strtol(height_str, &height_end_pointer, 10);
+    long color = strtol(color_str, &color_end_pointer, 10);
+
+    if (*width_end_pointer != '\0' || *height_end_pointer != '\0' || *color_end_pointer != '\0' ||
+        width <= 0 || height <= 0 || color < 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct canvas* new_canvas = animate_create_canvas((size_t)height, (size_t)width, (size_t)color);
+
+    if (new_canvas == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    uint64_t canvas_handle = (uint64_t)new_canvas;
+
+    char response[128];
+    sprintf(response, "0 %lu\n", canvas_handle);
+    write(fd_s2c, response, strlen(response));
+    return 0;
+}
+
+// after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
-    // after processing, return 1 for should_disconnect, 0 otherwise
-    strip_newline(command_line);
+    size_t len = strlen(command_line);
+    if (len > 0 && command_line[len - 1] == '\n'){
+        command_line[len - 1] = '\0';
+    }
 
     char* saveptr;
     char* cmd = strtok_r(command_line, " ", &saveptr);
@@ -36,98 +126,25 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return 0;
     }
 
-    if (strcmp(cmd, "Login") == 0){
-        char* username = strtok_r(NULL, " ", &saveptr);
-        if (username == NULL) {
-            write(fd_s2c, "-2\n", 3);
-            return 0;
-        }
-
-        if (strlen(username) > 32){
-            write(fd_s2c, "-2\n", 3);
-            return 0;
-        }
-
-        FILE* file = fopen("users.txt", "r");
-        if (file == NULL) {
-            write(fd_s2c, "-3\n", 3);
-            return 1;
-        }
-
-        char line[256];
-        int found = 0;
-        int balance = 0;
-
-        while (fgets(line, sizeof(line), file)) {
-            char current_user[64];
-            int current_balance;
-            if (sscanf(line, "%s %d", current_user, &current_balance) == 2) {
-                if (strcmp(current_user, username) == 0) {
-                    balance = current_balance;
-                    found = 1;
-                    break;
-                }
-            }
-        }
-        
-        fclose(file);
-
-        char response[128];
-
-        if (found) {
-            if (balance > 0) {
-                sprintf(response, "%d\n", balance);
-                write(fd_s2c, response, strlen(response));
-                return 0;
-            } else {
-                sprintf(response, "Reject BALANCE\n");
-                write(fd_s2c, response, strlen(response));
-                return 1;
-            }
-        } else {
-            sprintf(response, "Reject UNAUTHORISED\n");
-            write(fd_s2c, response, strlen(response));
-            return 1;
-        }
-    
-    } else if (strcmp(cmd, "create_canvas") == 0) {
-        char* width_str = strtok_r(NULL, " ", &saveptr);
-        char* height_str = strtok_r(NULL, " ", &saveptr);
-        char* color_str = strtok_r(NULL, " ", &saveptr);
-
-        if (width_str == NULL || height_str == NULL || color_str == NULL) {
-            write(fd_s2c, "-1\n", 3);
-            return 0;
-        }
-
-        int width = atoi(width_str);
-        int height = atoi(height_str);
-        int color = atoi(color_str);
-
-        if (width <= 0 || height <= 0 || color < 0) {
-            write(fd_s2c, "-2\n", 3);
-            return 0;
-        }
-
-        struct canvas* new_canvas = animate_create_canvas(width, height, color);
-
-        if (new_canvas == NULL) {
-            write(fd_s2c, "-3\n", 3);
-            return 0;
-        }
-
-        uint64_t canvas_handle = (uint64_t)new_canvas;
-
-        char response[128];
-        sprintf(response, "0 %lu\n", canvas_handle);
-        write(fd_s2c, response, strlen(response));
+    // forbidden function calls
+    if (strcmp(cmd, "set_animation_function") == 0 ||
+        strcmp(cmd, "frame_size_bytes") == 0 ||
+        strcmp(cmd, "generate_frame") == 0) {
+        write(fd_s2c, "-1\n", 3);
         return 0;
+    }
 
+    if (strcmp(cmd, "Login") == 0){
+        return handle_login(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "create_canvas") == 0) {
+        return handle_create_canvas(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
     }
-    // elifs for other commands
+
+    write(fd_s2c, "-1\n", 3);
+    return 0;
 }
 
 int main(int argc, char** argv, char** envp) {
