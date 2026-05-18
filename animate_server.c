@@ -111,6 +111,46 @@ int handle_create_canvas(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_create_rectangle(int fd_s2c, char* saveptr) {
+    char* width_str = strtok_r(NULL, " ", &saveptr);
+    char* height_str = strtok_r(NULL, " ", &saveptr);
+    char* color_str = strtok_r(NULL, " ", &saveptr);
+    char* filled_str = strtok_r(NULL, " ", &saveptr);
+
+    if (width_str == NULL || height_str == NULL || color_str == NULL || filled_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* width_endptr;
+    char* height_endptr;
+    char* color_endptr;
+    char* filled_endptr;
+
+    long width = strtol(width_str, &width_endptr, 10);
+    long height = strtol(height_str, &height_endptr, 10);
+    long color = strtol(color_str, &color_endptr, 10);
+    long filled = strtol(filled_str, &filled_endptr, 10);
+
+    if (*width_endptr != '\0' || *height_endptr != '\0' || *color_endptr != '\0' || *filled_endptr != '\0' ||
+        width <= 0 || height <= 0 || color < 0 || (filled != 0 && filled != 1)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite* new_rectangle_sprite = animate_create_rectangle((size_t)width, (size_t)height, (color_t)color, (bool)filled);
+    if (new_rectangle_sprite == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    uint64_t sprite_handle = (uint64_t)new_rectangle_sprite;
+    char response[128];
+    sprintf(response, "0 %lu\n", sprite_handle);
+    write(fd_s2c, response, strlen(response));
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -138,6 +178,8 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_login(fd_s2c, saveptr);
     } else if (strcmp(cmd, "create_canvas") == 0) {
         return handle_create_canvas(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "create_rectangle") == 0){
+        return handle_create_rectangle(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
