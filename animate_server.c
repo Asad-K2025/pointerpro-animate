@@ -188,6 +188,44 @@ int handle_create_circle(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_set_animation_params(int fd_s2c, char* saveptr) {
+    char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
+    char* velocity_x_str = strtok_r(NULL, " ", &saveptr);
+    char* velocity_y_str = strtok_r(NULL, " ", &saveptr);
+    char* acceleration_x_str = strtok_r(NULL, " ", &saveptr);
+    char* acceleration_y_str = strtok_r(NULL, " ", &saveptr);
+
+    if (placement_handle_str == NULL || velocity_x_str == NULL || velocity_y_str == NULL || acceleration_x_str == NULL || acceleration_y_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* placement_endptr;
+    char* velocity_x_endptr;
+    char* velocity_y_endptr;
+    char* acceleration_x_endptr;
+    char* acceleration_y_endptr;
+
+    long placement_address = strtol(placement_handle_str, &placement_endptr, 10);
+    long velocity_x = strtol(velocity_x_str, &velocity_x_endptr, 10);
+    long velocity_y = strtol(velocity_y_str, &velocity_y_endptr, 10);
+    long acceleration_x = strtol(acceleration_x_str, &acceleration_x_endptr, 10);
+    long acceleration_y = strtol(acceleration_y_str, &acceleration_y_endptr, 10);
+
+    if (*placement_endptr != '\0' || *velocity_x_endptr != '\0' || *velocity_y_endptr != '\0' || *acceleration_x_endptr != '\0' || *acceleration_y_endptr != '\0' ||
+        placement_address <= 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    
+    animate_set_animation_params(target_placement, (ssize_t)velocity_x, (ssize_t)velocity_y, (ssize_t)acceleration_x, (ssize_t)acceleration_y);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -218,7 +256,9 @@ int process_rpc_command(int fd_s2c, char* command_line){
     } else if (strcmp(cmd, "create_rectangle") == 0){
         return handle_create_rectangle(fd_s2c, saveptr);
     } else if (strcmp(cmd, "create_circle") == 0){
-        return handle_create_circle(fd_s2c, saveptr);    
+        return handle_create_circle(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "set_animation_params") == 0) {
+        return handle_set_animation_params(fd_s2c, saveptr);    
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
