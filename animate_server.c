@@ -113,12 +113,14 @@ void* worker_thread_routine(void* arg) {
             
             if (should_disconnect) { // find and close the client
                 pthread_mutex_lock(&sessions_lock);
-                task->session->active = 0;
                 sleep(1);
+                task->session->active = 0;
+
                 close(task->session->fd_c2s);
                 close(task->session->fd_s2c);
                 
-                char fifo_c2s[64], fifo_s2c[64];
+                char fifo_c2s[64];
+                char fifo_s2c[64];
                 sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)task->session->client_pid);
                 sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)task->session->client_pid);
                 unlink(fifo_c2s);
@@ -636,6 +638,7 @@ int main(int argc, char** argv, char** envp) {
     int thread_pool_size = atoi(argv[1]);
     pid_t process_id = getpid();
     printf("Server PID: %ld\n", (long)process_id);
+    fflush(stdout);
 
     struct sigaction sa;
     sa.sa_sigaction = handle_sigusr1;
