@@ -21,6 +21,15 @@ typedef struct {  // tracks every authenticated and active client
     int fd_s2c;
     char username[33];
     int active;
+
+    char read_buf[512];
+    size_t read_len;
+
+    // tickets ensure order of requests for each client
+    uint32_t next_ticket;
+    uint32_t expected_ticket; // currently allowed to write to pipe
+    pthread_mutex_t order_lock;
+    pthread_cond_t order_cond;
 } client_session_t;
 
 client_session_t* active_sessions = NULL;
@@ -28,8 +37,9 @@ int session_count = 0;
 pthread_mutex_t sessions_lock = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct rpc_task {  // thread pool task structure
-    char command_line[256];
-    int fd_s2c;
+    char command_line[512];
+    client_session_t* session;
+    uint32_t ticket;
     struct rpc_task* next;
 } rpc_task_t;
 
@@ -44,7 +54,7 @@ int process_rpc_command(int fd_s2c, char* command_line);
 
 task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
-void queue_push(const char* command, int fd_s2c) {
+void queue_push(const char* command, client_session_t* session, uint32_t ticket) {
     rpc_task_t* new_task = malloc(sizeof(rpc_task_t));
     if (new_task == NULL) {
         return;
@@ -52,7 +62,8 @@ void queue_push(const char* command, int fd_s2c) {
 
     strncpy(new_task->command_line, command, sizeof(new_task->command_line) - 1);
     new_task->command_line[sizeof(new_task->command_line) - 1] = '\0';
-    new_task->fd_s2c = fd_s2c;
+    new_task->session = session;
+    new_task->ticket = ticket;
     new_task->next = NULL;
 
     pthread_mutex_lock(&work_queue.lock);
@@ -89,29 +100,32 @@ void* worker_thread_routine(void* arg) {
     while (1) {
         rpc_task_t* task = queue_pop();
         if (task != NULL) {
-            int should_disconnect = process_rpc_command(task->fd_s2c, task->command_line);
+            pthread_mutex_lock(&task->session->order_lock);
+            while (task->session->expected_ticket != task->ticket) {
+                pthread_cond_wait(&task->session->order_cond, &task->session->order_lock);
+            }
+
+            int should_disconnect = process_rpc_command(task->session->fd_s2c, task->command_line);
+
+            task->session->expected_ticket++;
+            pthread_cond_broadcast(&task->session->order_cond);
+            pthread_mutex_unlock(&task->session->order_lock);
             
             if (should_disconnect) { // find and close the client
                 pthread_mutex_lock(&sessions_lock);
-                for (int i = 0; i < session_count; i++) {
-                    if (active_sessions[i].fd_s2c == task->fd_s2c && active_sessions[i].active) {
-                        active_sessions[i].active = 0;
-
-                        sleep(1);
-                            
-                        close(active_sessions[i].fd_c2s);
-                        close(active_sessions[i].fd_s2c);
-                        
-                        char fifo_c2s[64];
-                        char fifo_s2c[64];
-                        sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)active_sessions[i].client_pid);
-                        sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)active_sessions[i].client_pid);
-                        unlink(fifo_c2s);
-                        unlink(fifo_s2c);
-                        break;
-                    }
-                }
+                task->session->active = 0;
+                sleep(1);
+                close(task->session->fd_c2s);
+                close(task->session->fd_s2c);
+                
+                char fifo_c2s[64], fifo_s2c[64];
+                sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)task->session->client_pid);
+                sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)task->session->client_pid);
+                unlink(fifo_c2s);
+                unlink(fifo_s2c);
                 pthread_mutex_unlock(&sessions_lock);
+                pthread_mutex_destroy(&task->session->order_lock);
+                pthread_cond_destroy(&task->session->order_cond);
             }
             free(task);
         }
@@ -663,6 +677,11 @@ int main(int argc, char** argv, char** envp) {
             active_sessions[session_count].fd_c2s = fd_c2s;
             active_sessions[session_count].fd_s2c = fd_s2c;
             active_sessions[session_count].active = 1;
+            active_sessions[session_count].read_len = 0;
+            active_sessions[session_count].next_ticket = 0;
+            active_sessions[session_count].expected_ticket = 0;
+            pthread_mutex_init(&active_sessions[session_count].order_lock, NULL);
+            pthread_cond_init(&active_sessions[session_count].order_cond, NULL);
             session_count++;
             pthread_mutex_unlock(&sessions_lock);
         }
@@ -698,21 +717,57 @@ int main(int argc, char** argv, char** envp) {
         if (poll_result > 0) {
             for (int i = 0; i < total_monitored; i++) {
                 if (fds[i].revents & POLLIN) {
-                    char buffer[128];
-                    ssize_t bytes_read = read(fds[i].fd, buffer, sizeof(buffer) - 1);
+                    pthread_mutex_lock(&sessions_lock);
+                    client_session_t* session = &active_sessions[session_indices[i]];
+                    
+                    // read into buffer rihgt after any leftover parital data
+                    size_t space_left = sizeof(session->read_buf) - session->read_len - 1;
+                    ssize_t bytes_read = read(session->fd_c2s, session->read_buf + session->read_len, space_left);
                     
                     if (bytes_read > 0) {
-                        buffer[bytes_read] = '\0';
-                        
-                        pthread_mutex_lock(&sessions_lock);
-                        int target_s2c = active_sessions[session_indices[i]].fd_s2c;
-                        pthread_mutex_unlock(&sessions_lock);
+                        session->read_len += bytes_read;
+                        session->read_buf[session->read_len] = '\0';
 
-                        queue_push(buffer, target_s2c);
+                        // prcoess complete lines
+                        char* line_start = session->read_buf;
+                        char* newline_ptr;
+                        
+                        while ((newline_ptr = strchr(line_start, '\n')) != NULL) {
+                            *newline_ptr = '\0'; // temporary string split
+                            
+                            if (strlen(line_start) > 0) {
+                                char complete_cmd[512];
+                                strncpy(complete_cmd, line_start, sizeof(complete_cmd) - 1);
+                                complete_cmd[sizeof(complete_cmd) - 1] = '\0';
+                                
+                                uint32_t assigned_ticket = session->next_ticket++;
+                                
+                                queue_push(complete_cmd, session, assigned_ticket);
+                            }
+                            line_start = newline_ptr + 1;
+                        }
+
+                        size_t consumed_bytes = line_start - session->read_buf;
+                        if (consumed_bytes > 0) {
+                            memmove(session->read_buf, line_start, session->read_len - consumed_bytes);
+                            session->read_len -= consumed_bytes;
+                            session->read_buf[session->read_len] = '\0';
+                        }
+                    } else if (bytes_read == 0) {
+                        session->active = 0;
+                        close(session->fd_c2s);
+                        close(session->fd_s2c);
+                        char fifo_c2s[64], fifo_s2c[64];
+                        sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)session->client_pid);
+                        sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)session->client_pid);
+                        unlink(fifo_c2s);
+                        unlink(fifo_s2c);
+                        pthread_mutex_destroy(&session->order_lock);
+                        pthread_cond_destroy(&session->order_cond);
                     }
+                    pthread_mutex_unlock(&sessions_lock);
                 }
             }
-
             free(fds);
             free(session_indices);
         }
