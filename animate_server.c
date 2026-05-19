@@ -8,9 +8,113 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <poll.h>
 
 volatile sig_atomic_t client_requested = 0;
 volatile pid_t pending_client_pid = 0;
+
+
+typedef struct {  // tracks every authenticated and active client
+    pid_t client_pid;
+    int fd_c2s;
+    int fd_s2c;
+    char username[33];
+    int active;
+} client_session_t;
+
+client_session_t* active_sessions = NULL;
+int session_count = 0;
+pthread_mutex_t sessions_lock = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct rpc_task {  // thread pool task structure
+    char command_line[256];
+    int fd_s2c;
+    struct rpc_task* next;
+} rpc_task_t;
+
+typedef struct {
+    rpc_task_t* head;
+    rpc_task_t* tail;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+} task_queue_t;
+
+int process_rpc_command(int fd_s2c, char* command_line);
+
+task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
+
+void queue_push(const char* command, int fd_s2c) {
+    rpc_task_t* new_task = malloc(sizeof(rpc_task_t));
+    if (new_task == NULL) {
+        return;
+    }
+
+    strncpy(new_task->command_line, command, sizeof(new_task->command_line) - 1);
+    new_task->command_line[sizeof(new_task->command_line) - 1] = '\0';
+    new_task->fd_s2c = fd_s2c;
+    new_task->next = NULL;
+
+    pthread_mutex_lock(&work_queue.lock);
+    if (work_queue.tail == NULL) {
+        work_queue.head = new_task;
+        work_queue.tail = new_task;
+    } else {
+        work_queue.tail->next = new_task;
+        work_queue.tail = new_task;
+    }
+    pthread_cond_signal(&work_queue.cond);
+    pthread_mutex_unlock(&work_queue.lock);
+}
+
+rpc_task_t* queue_pop(void) {
+    pthread_mutex_lock(&work_queue.lock);
+
+    while (work_queue.head == NULL) {
+        pthread_cond_wait(&work_queue.cond, &work_queue.lock);
+    }
+
+    rpc_task_t* task = work_queue.head;
+    work_queue.head = work_queue.head->next;
+
+    if (work_queue.head == NULL) {
+        work_queue.tail = NULL;
+    }
+
+    pthread_mutex_unlock(&work_queue.lock);
+    return task;
+}
+
+void* worker_thread_routine(void* arg) {
+    while (1) {
+        rpc_task_t* task = queue_pop();
+        if (task != NULL) {
+            int should_disconnect = process_rpc_command(task->fd_s2c, task->command_line);
+            
+            if (should_disconnect) { // find and close the client
+                pthread_mutex_lock(&sessions_lock);
+                for (int i = 0; i < session_count; i++) {
+                    if (active_sessions[i].fd_s2c == task->fd_s2c && active_sessions[i].active) {
+                        active_sessions[i].active = 0;
+                        close(active_sessions[i].fd_c2s);
+                        close(active_sessions[i].fd_s2c);
+                        
+                        char fifo_c2s[64];
+                        char fifo_s2c[64];
+                        sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)active_sessions[i].client_pid);
+                        sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)active_sessions[i].client_pid);
+                        unlink(fifo_c2s);
+                        unlink(fifo_s2c);
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&sessions_lock);
+            }
+            free(task);
+        }
+    }
+    return NULL;
+}
 
 void handle_sigusr1(int singal_number, siginfo_t* info, void* context){
     pending_client_pid = info->si_pid;
