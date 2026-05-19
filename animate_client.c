@@ -113,7 +113,9 @@ int main(int argc, char** argv, char** envp) {
         
         // check disconnect after the above if statement to first handle server repsonse
         if (strncmp(input_buffer, "Disconnect", 10) == 0) {
-            break;
+            close(fd_c2s);
+            close(fd_s2c);
+            return 0;
         }   
     }
     
