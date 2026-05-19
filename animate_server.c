@@ -340,6 +340,94 @@ int handle_destroy_canvas(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_placement_up(int fd_s2c, char* saveptr) {
+    char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
+    if (placement_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* placement_endptr;
+    unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
+
+    if (*placement_endptr != '\0' || placement_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    animate_placement_up(target_placement);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
+int handle_placement_down(int fd_s2c, char* saveptr) {
+    char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
+    if (placement_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* placement_endptr;
+    unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
+
+    if (*placement_endptr != '\0' || placement_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    animate_placement_down(target_placement);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
+int handle_placement_top(int fd_s2c, char* saveptr) {
+    char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
+    if (placement_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* placement_endptr;
+    unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
+
+    if (*placement_endptr != '\0' || placement_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    animate_placement_top(target_placement);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
+int handle_placement_bottom(int fd_s2c, char* saveptr) {
+    char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
+    if (placement_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* placement_endptr;
+    unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
+
+    if (*placement_endptr != '\0' || placement_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    animate_placement_bottom(target_placement);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -381,6 +469,14 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_place_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
         return handle_destroy_canvas(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "placement_up") == 0) {
+        return handle_placement_up(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "placement_down") == 0) {
+        return handle_placement_down(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "placement_top") == 0) {
+        return handle_placement_top(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "placement_bottom") == 0) {
+        return handle_placement_bottom(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
