@@ -317,6 +317,29 @@ int handle_place_sprite(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_destroy_canvas(int fd_s2c, char* saveptr) {
+    char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
+
+    if (canvas_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* canvas_endptr;
+    unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
+
+    if (*canvas_endptr != '\0' || canvas_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct canvas* target_canvas = (struct canvas*)canvas_address;
+    animate_destroy_canvas(target_canvas);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -356,6 +379,8 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_destroy_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "place_sprite") == 0) {
         return handle_place_sprite(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "destroy_canvas")  == 0){
+        return handle_destroy_canvas(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
