@@ -390,9 +390,9 @@ int handle_destroy_sprite(int fd_s2c, char* saveptr) {
     bool failed = animate_destroy_sprite(target_sprite);
 
     if (failed) {
-        write(fd_s2c, "-3\n", 3);
+        write(fd_s2c, "0 1\n", 4);
     } else {
-        write(fd_s2c, "0\n", 2);
+        write(fd_s2c, "0 0\n", 4);
     }
     return 0;
 }
