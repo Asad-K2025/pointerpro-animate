@@ -274,6 +274,49 @@ int handle_destroy_sprite(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_place_sprite(int fd_s2c, char* saveptr) {
+    char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
+    char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
+    char* x_str = strtok_r(NULL, " ", &saveptr);
+    char* y_str = strtok_r(NULL, " ", &saveptr);
+
+    if (canvas_handle_str == NULL || sprite_handle_str == NULL || x_str == NULL || y_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* canvas_endptr;
+    char* sprite_endptr;
+    char* x_endptr;
+    char* y_endptr;
+
+    unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
+    unsigned long long sprite_address = strtoull(sprite_handle_str, &sprite_endptr, 10);
+    long x = strtol(x_str, &x_endptr, 10);
+    long y = strtol(y_str, &y_endptr, 10);
+
+    if (*canvas_endptr != '\0' || *sprite_endptr != '\0' || *x_endptr != '\0' || *y_endptr != '\0' ||
+        canvas_address == 0 || sprite_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct canvas* target_canvas = (struct canvas*)canvas_address;
+    struct sprite* target_sprite = (struct sprite*)sprite_address;
+
+    struct sprite_placement* new_placement = animate_place_sprite(target_canvas, target_sprite, (ssize_t)x, (ssize_t)y);
+    if (new_placement == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    uint64_t placement_handle = (uint64_t)new_placement;
+    char response[128];
+    sprintf(response, "0 %lu\n", placement_handle);
+    write(fd_s2c, response, strlen(response));
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -311,6 +354,8 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_create_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_sprite") == 0) {
         return handle_destroy_sprite(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "place_sprite") == 0) {
+        return handle_place_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
