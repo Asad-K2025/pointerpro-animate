@@ -96,6 +96,9 @@ void* worker_thread_routine(void* arg) {
                 for (int i = 0; i < session_count; i++) {
                     if (active_sessions[i].fd_s2c == task->fd_s2c && active_sessions[i].active) {
                         active_sessions[i].active = 0;
+
+                        sleep(1);
+                            
                         close(active_sessions[i].fd_c2s);
                         close(active_sessions[i].fd_s2c);
                         
@@ -616,6 +619,7 @@ int process_rpc_command(int fd_s2c, char* command_line){
 
 int main(int argc, char** argv, char** envp) {
 
+    int thread_pool_size = atoi(argv[1]);
     pid_t process_id = getpid();
     printf("Server PID: %ld\n", (long)process_id);
 
@@ -625,9 +629,12 @@ int main(int argc, char** argv, char** envp) {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR1, &sa, NULL);
 
-    while (1){
-        pause();
+    pthread_t* threads = malloc(sizeof(pthread_t) * thread_pool_size);
+    for (int i = 0; i < thread_pool_size; i++){
+        pthread_create(&threads[i], NULL, worker_thread_routine, NULL);
+    }
 
+    while (1){
         if (client_requested) {
             pid_t client_pid = pending_client_pid;
             client_requested = 0; // singal hanlder reset
@@ -647,32 +654,68 @@ int main(int argc, char** argv, char** envp) {
 
             kill(client_pid, SIGUSR2);  // sends sigusr2 to client
 
-            int fd_c2s = open(fifo_c2s, O_RDONLY);
+            int fd_c2s = open(fifo_c2s, O_RDONLY | O_NONBLOCK);
             int fd_s2c = open(fifo_s2c, O_WRONLY);
 
-            char buffer[128];
-            ssize_t bytes_read;
+            pthread_mutex_lock(&sessions_lock);
+            active_sessions = realloc(active_sessions, sizeof(client_session_t) * (session_count + 1));
+            active_sessions[session_count].client_pid = client_pid;
+            active_sessions[session_count].fd_c2s = fd_c2s;
+            active_sessions[session_count].fd_s2c = fd_s2c;
+            active_sessions[session_count].active = 1;
+            session_count++;
+            pthread_mutex_unlock(&sessions_lock);
+        }
 
-            // while used for continuous command handling
-            while ((bytes_read = read(fd_c2s, buffer, sizeof(buffer) - 1)) > 0) {
-                if (bytes_read > 0){
-                    buffer[bytes_read] = '\0';
-                }
+        pthread_mutex_lock(&sessions_lock);
+        int total_monitored = 0;
+        for (int i = 0; i < session_count; i++) {
+            if (active_sessions[i].active) total_monitored++;
+        }
 
-                int should_disconnect = process_rpc_command(fd_s2c, buffer);
-                if (should_disconnect){
-                    break;
+        if (total_monitored == 0) {
+            pthread_mutex_unlock(&sessions_lock);
+            usleep(10000);  // if no clients are attached
+            continue;
+        }
+
+        struct pollfd* fds = malloc(sizeof(struct pollfd) * total_monitored);
+        int* session_indices = malloc(sizeof(int) * total_monitored);
+        
+        int current_idx = 0;
+        for (int i = 0; i < session_count; i++) {
+            if (active_sessions[i].active) {
+                fds[current_idx].fd = active_sessions[i].fd_c2s;
+                fds[current_idx].events = POLLIN;
+                fds[current_idx].revents = 0;
+                session_indices[current_idx] = i;
+                current_idx++;
+            }
+        }
+        pthread_mutex_unlock(&sessions_lock);
+            
+        int poll_result = poll(fds, total_monitored, 10);
+        if (poll_result > 0) {
+            for (int i = 0; i < total_monitored; i++) {
+                if (fds[i].revents & POLLIN) {
+                    char buffer[128];
+                    ssize_t bytes_read = read(fds[i].fd, buffer, sizeof(buffer) - 1);
+                    
+                    if (bytes_read > 0) {
+                        buffer[bytes_read] = '\0';
+                        
+                        pthread_mutex_lock(&sessions_lock);
+                        int target_s2c = active_sessions[session_indices[i]].fd_s2c;
+                        pthread_mutex_unlock(&sessions_lock);
+
+                        queue_push(buffer, target_s2c);
+                    }
                 }
             }
-            
-            // disconnection of client
-            sleep(1);
-            close(fd_c2s);
-            close(fd_s2c);
-            unlink(fifo_c2s);
-            unlink(fifo_s2c);
+
+            free(fds);
+            free(session_indices);
         }
-    }
-    
+    }    
     return 0;
 }
