@@ -226,6 +226,54 @@ int handle_set_animation_params(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_create_sprite(int fd_s2c, char* saveptr) {
+    char* file_str = strtok_r(NULL, " ", &saveptr);
+
+    if (file_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    struct sprite* new_sprite = animate_create_sprite(file_str);
+    if (new_sprite == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    uint64_t sprite_handle = (uint64_t)new_sprite;
+    char response[128];
+    sprintf(response, "0 %lu\n", sprite_handle);
+    write(fd_s2c, response, strlen(response));
+    return 0;
+}
+
+int handle_destroy_sprite(int fd_s2c, char* saveptr) {
+    char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
+
+    if (sprite_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* sprite_endptr;
+    unsigned long long sprite_address = strtoull(sprite_handle_str, &sprite_endptr, 10);
+
+    if (*sprite_endptr != '\0' || sprite_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct sprite* target_sprite = (struct sprite*)sprite_address;
+    bool failed = animate_destroy_sprite(target_sprite);
+
+    if (failed) {
+        write(fd_s2c, "-3\n", 3);
+    } else {
+        write(fd_s2c, "0\n", 2);
+    }
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -258,7 +306,11 @@ int process_rpc_command(int fd_s2c, char* command_line){
     } else if (strcmp(cmd, "create_circle") == 0){
         return handle_create_circle(fd_s2c, saveptr);
     } else if (strcmp(cmd, "set_animation_params") == 0) {
-        return handle_set_animation_params(fd_s2c, saveptr);    
+        return handle_set_animation_params(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "create_sprite") == 0) {
+        return handle_create_sprite(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "destroy_sprite") == 0) {
+        return handle_destroy_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
