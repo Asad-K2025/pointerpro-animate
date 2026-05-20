@@ -49,7 +49,7 @@ typedef struct {
     pthread_cond_t cond;
 } task_queue_t;
 
-int process_rpc_command(int fd_s2c, char* command_line);
+int process_rpc_command(client_session_t* session, char* command_line);
 
 struct canvas {  // defien struct to access it's width and height
     size_t width;
@@ -59,6 +59,22 @@ struct canvas {  // defien struct to access it's width and height
     struct sprite_placement* head;
     struct sprite_placement* tail;
 };
+
+typedef struct canvas_share_node {
+    uint64_t canvas_handle;
+    char owner_username[33];
+    
+    char** shared_usernames;
+    int shared_count;
+    int shared_capacity;
+
+    int ref_count;
+
+    struct canvas_share_node* next;
+} canvas_share_node_t;
+
+canvas_share_node_t* global_canvas_registry = NULL;
+pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 
 task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
@@ -113,7 +129,7 @@ void* worker_thread_routine(void* arg) {
                 pthread_cond_wait(&task->session->order_cond, &task->session->order_lock);
             }
 
-            int disconnect_status = process_rpc_command(task->session->fd_s2c, task->command_line);
+            int disconnect_status = process_rpc_command(task->session, task->command_line);
 
             task->session->expected_ticket++;
             pthread_cond_broadcast(&task->session->order_cond);
@@ -674,8 +690,86 @@ int handle_generate(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
+    char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
+    char* target_username = strtok_r(NULL, " ", &saveptr);
+
+    if (canvas_handle_str == NULL || target_username == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* canvas_endptr;
+    unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
+
+    if (*canvas_endptr != '\0' || canvas_address == 0 || strlen(target_username) > 32) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    pthread_mutex_lock(&registry_lock);
+    
+    canvas_share_node_t* curr = global_canvas_registry;
+    canvas_share_node_t* target_node = NULL;
+    while (curr != NULL) {
+        if (curr->canvas_handle == canvas_address) {
+            target_node = curr;
+            break;
+        }
+        curr = curr->next;
+    }
+
+    if (target_node == NULL) {  // canvas deosn't exist
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    int has_access = (strcmp(target_node->owner_username, session->username) == 0);
+    for (int i = 0; i < target_node->shared_count; i++) {
+        if (strcmp(target_node->shared_usernames[i], session->username) == 0) {
+            has_access = 1;
+            break;
+        }
+    }
+
+    if (!has_access) {
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3); // client doesn't have right to share it
+        return 0;
+    }
+
+    int already_shared = 0;
+    if (strcmp(target_node->owner_username, target_username) == 0) {
+        already_shared = 1;
+    }
+    for (int i = 0; i < target_node->shared_count; i++) {
+        if (strcmp(target_node->shared_usernames[i], target_username) == 0) {
+            already_shared = 1;
+            break;
+        }
+    }
+
+    if (!already_shared) {
+        if (target_node->shared_count >= target_node->shared_capacity) {
+            target_node->shared_capacity = target_node->shared_capacity == 0 ? 4 : target_node->shared_capacity * 2;
+            target_node->shared_usernames = realloc(target_node->shared_usernames, sizeof(char*) * target_node->shared_capacity);
+        }
+        target_node->shared_usernames[target_node->shared_count] = strdup(target_username);
+        target_node->shared_count++;
+        target_node->ref_count++;
+    }
+
+    pthread_mutex_unlock(&registry_lock);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
-int process_rpc_command(int fd_s2c, char* command_line){
+int process_rpc_command(client_session_t* session, char* command_line){
+    int fd_s2c = session->fd_s2c;
+
     size_t len = strlen(command_line);
     if (len > 0 && command_line[len - 1] == '\n'){
         command_line[len - 1] = '\0';
@@ -733,6 +827,8 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_destroy_placement(fd_s2c, saveptr);
     } else if (strcmp(cmd, "generate") == 0) {
         return handle_generate(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "share_canvas") == 0){
+        return handle_share_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
