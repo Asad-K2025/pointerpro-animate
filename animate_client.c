@@ -62,6 +62,15 @@ int main(int argc, char** argv, char** envp) {
         snprintf(send_buffer, sizeof(send_buffer), "%s\n", input_buffer);
         write(fd_c2s, send_buffer, strlen(send_buffer));
 
+        // check disconnect after the above if statement to first handle server repsonse
+        if (strncmp(input_buffer, "Disconnect", 10) == 0) {
+            logged_in = 0;
+
+            close(fd_c2s);
+            close(fd_s2c);
+            return 0;
+        } 
+
         char response_buffer[128];
         ssize_t bytes_read = read(fd_s2c, response_buffer, sizeof(response_buffer));
         
@@ -107,14 +116,6 @@ int main(int argc, char** argv, char** envp) {
             fflush(stdout);
 
         } 
-        
-        // check disconnect after the above if statement to first handle server repsonse
-        if (strncmp(input_buffer, "Disconnect", 10) == 0) {
-            logged_in = 0;
-            close(fd_c2s);
-            close(fd_s2c);
-            return 0;
-        }   
     }
     
     close(fd_c2s);
