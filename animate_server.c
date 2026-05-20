@@ -171,7 +171,7 @@ void handle_sigusr1(int singal_number, siginfo_t* info, void* context){
     client_requested = 1;
 }
 
-int handle_login(int fd_s2c, char* saveptr){
+int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
     char* username = strtok_r(NULL, " ", &saveptr);
     if (username == NULL) {
         write(fd_s2c, "-2\n", 3);
@@ -182,6 +182,9 @@ int handle_login(int fd_s2c, char* saveptr){
         write(fd_s2c, "-2\n", 3);
         return 0;
     }
+
+    strncpy(session->username, username, 32);
+    session->username[32] = '\0';
 
     FILE* file = fopen("users.txt", "r");
     if (file == NULL) {
@@ -937,7 +940,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     }
 
     if (strcmp(cmd, "Login") == 0){
-        int login_result = handle_login(fd_s2c, saveptr);
+        int login_result = handle_login(fd_s2c, session, saveptr);
 
         if (login_result == 1){
             return 2;  // sleep disconnect status as login rejected
