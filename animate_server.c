@@ -573,6 +573,92 @@ int handle_destroy_placement(int fd_s2c, char* saveptr) {
     return 0;
 }
 
+int handle_generate(int fd_s2c, char* saveptr) {
+    char* canvas_str = strtok_r(NULL, " ", &saveptr);
+    char* filename = strtok_r(NULL, " ", &saveptr);
+    char* start_str = strtok_r(NULL, " ", &saveptr);
+    char* end_str = strtok_r(NULL, " ", &saveptr);
+    char* framerate_str = strtok_r(NULL, " ", &saveptr);
+
+    if (!canvas_str || !filename || !start_str || !end_str || !framerate_str) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* endptr1;
+    char* endptr2;
+    char* endptr3;
+    char* endptr4;
+    unsigned long long canvas_address = strtoull(canvas_str, &endptr1, 10);
+    long start_frame = strtol(start_str, &endptr2, 10);
+    long end_frame = strtol(end_str, &endptr3, 10);
+    long frame_rate = strtol(framerate_str, &endptr4, 10);
+
+    if (*endptr1 != '\0' || *endptr2 != '\0' || *endptr3 != '\0' || *endptr4 != '\0' ||
+        canvas_address == 0 || start_frame < 0 || end_frame < start_frame || frame_rate <= 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    struct canvas* target_canvas = (struct canvas*)canvas_address;
+
+    char dat_path[512];
+    char mp4_path[512];
+    char log_path[512];
+    snprintf(dat_path, sizeof(dat_path), "%s.dat", filename);
+    snprintf(mp4_path, sizeof(mp4_path), "%s.mp4", filename);
+    snprintf(log_path, sizeof(log_path), "%s.log", filename);
+
+    FILE* dat_file = fopen(dat_path, "wb");
+    if (!dat_file) {
+        write(fd_s2c, "0 -1\n", 5);  // data wrtie failed
+        return 0;
+    }
+
+    size_t frame_bytes = animate_frame_size_bytes(target_canvas);
+    if (frame_bytes == 0) {
+        fclose(dat_file);
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    void* frame_buffer = malloc(frame_bytes);
+    if (!frame_buffer) {
+        fclose(dat_file);
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    for (long f = start_frame; f <= end_frame; f++) {
+        animate_generate_frame(target_canvas, (size_t)f, (size_t)frame_rate, frame_buffer);
+        
+        size_t written = fwrite(frame_buffer, 1, frame_bytes, dat_file);
+        if (written != frame_bytes) {
+            free(frame_buffer);
+            fclose(dat_file);
+            write(fd_s2c, "0 -1\n", 5); // data write failed
+            return 0;
+        }
+    }
+
+    free(frame_buffer);
+    fclose(dat_file);
+
+    char ffmpeg_cmd[2048];
+    snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
+             "ffmpeg -y -r %ld -f rawvideo -pix_fmt argb -s 800x600 -i %s -c:v libx264 -pix_fmt yuv420p %s > %s 2>&1",
+             frame_rate, dat_path, mp4_path, log_path);
+
+    int sys_status = system(ffmpeg_cmd);
+    if (sys_status != 0) {
+        write(fd_s2c, "0 0 -1\n", 7); // .mp4 or .log wrtie failed
+        return 0;
+    }
+
+    write(fd_s2c, "0 0 0\n", 6);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(int fd_s2c, char* command_line){
     size_t len = strlen(command_line);
@@ -624,6 +710,8 @@ int process_rpc_command(int fd_s2c, char* command_line){
         return handle_placement_bottom(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_placement") == 0) {
         return handle_destroy_placement(fd_s2c, saveptr);
+    } else if (strcmp(cmd, "generate") == 0) {
+        return handle_generate(fd_s2c, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
