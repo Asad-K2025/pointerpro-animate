@@ -70,6 +70,9 @@ typedef struct canvas_share_node {
 
     int ref_count;
 
+    int barrier_arrived_count;
+    pthread_cond_t barrier_cond;
+
     struct canvas_share_node* next;
 } canvas_share_node_t;
 
@@ -766,6 +769,75 @@ int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     return 0;
 }
 
+int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
+    char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
+
+    if (canvas_handle_str == NULL) {
+        write(fd_s2c, "-1\n", 3);
+        return 0;
+    }
+
+    char* canvas_endptr;
+    unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
+
+    if (*canvas_endptr != '\0' || canvas_address == 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    pthread_mutex_lock(&registry_lock);
+
+    canvas_share_node_t* target_node = global_canvas_registry;
+    while (target_node != NULL) {
+        if (target_node->canvas_handle == canvas_address) {
+            break;
+        }
+        target_node = target_node->next;
+    }
+
+    if (target_node == NULL) {
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    pthread_mutex_lock(&sessions_lock);
+    int expected_active_sharers = 0;  // calculate how many authorised users logged in
+    
+    for (int i = 0; i < session_count; i++) {
+        if (active_sessions[i].active) {
+            int is_authorized = (strcmp(target_node->owner_username, active_sessions[i].username) == 0);
+            for (int j = 0; j < target_node->shared_count; j++) {
+                if (strcmp(target_node->shared_usernames[j], active_sessions[i].username) == 0) {
+                    is_authorized = 1;
+                    break;
+                }
+            }
+            if (is_authorized) {
+                expected_active_sharers++;
+            }
+        }
+    }
+    pthread_mutex_unlock(&sessions_lock);
+
+    target_node->barrier_arrived_count++;
+
+    if (target_node->barrier_arrived_count >= expected_active_sharers) {
+        target_node->barrier_arrived_count = 0;
+        pthread_cond_broadcast(&target_node->barrier_cond);
+    } else {
+        int dynamic_wait_generation = 1;
+        while (dynamic_wait_generation && target_node->barrier_arrived_count > 0) {
+            pthread_cond_wait(&target_node->barrier_cond, &registry_lock);
+        }
+    }
+
+    pthread_mutex_unlock(&registry_lock);
+
+    write(fd_s2c, "0\n", 2);
+    return 0;
+}
+
 // after processing, return 1 for should_disconnect, 0 otherwise
 int process_rpc_command(client_session_t* session, char* command_line){
     int fd_s2c = session->fd_s2c;
@@ -829,6 +901,8 @@ int process_rpc_command(client_session_t* session, char* command_line){
         return handle_generate(fd_s2c, saveptr);
     } else if (strcmp(cmd, "share_canvas") == 0){
         return handle_share_canvas(fd_s2c, session, saveptr);
+    } else if (strcmp(cmd, "barrier") == 0) {
+        return handle_barrier(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
         write(fd_s2c, "0\n", 2);
         return 1;
