@@ -1,4 +1,3 @@
-
 #include <animate/animate.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -51,6 +50,15 @@ typedef struct {
 } task_queue_t;
 
 int process_rpc_command(int fd_s2c, char* command_line);
+
+struct canvas {  // defien struct to access it's width and height
+    size_t width;
+    size_t height;
+    color_t background_color;
+
+    struct sprite_placement* head;
+    struct sprite_placement* tail;
+};
 
 task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
@@ -633,8 +641,8 @@ int handle_generate(int fd_s2c, char* saveptr) {
         return 0;
     }
 
-    for (long f = start_frame; f <= end_frame; f++) {
-        animate_generate_frame(target_canvas, (size_t)f, (size_t)frame_rate, frame_buffer);
+    for (long frame = start_frame; frame <= end_frame; frame++) {
+        animate_generate_frame(target_canvas, (size_t)frame, (size_t)frame_rate, frame_buffer);
         
         size_t written = fwrite(frame_buffer, 1, frame_bytes, dat_file);
         if (written != frame_bytes) {
@@ -648,10 +656,13 @@ int handle_generate(int fd_s2c, char* saveptr) {
     free(frame_buffer);
     fclose(dat_file);
 
+    size_t width = target_canvas->width;
+    size_t height = target_canvas->height;
+
     char ffmpeg_cmd[2048];
     snprintf(ffmpeg_cmd, sizeof(ffmpeg_cmd),
-             "ffmpeg -y -r %ld -f rawvideo -pix_fmt argb -s 800x600 -i %s -c:v libx264 -pix_fmt yuv420p %s > %s 2>&1",
-             frame_rate, dat_path, mp4_path, log_path);
+             "ffmpeg -y -r %ld -f rawvideo -pix_fmt argb -s %zux%zu -i %s -c:v libx264 -pix_fmt yuv420p %s > %s 2>&1",
+             frame_rate, width, height, dat_path, mp4_path, log_path);
 
     int sys_status = system(ffmpeg_cmd);
     if (sys_status != 0) {
