@@ -105,15 +105,19 @@ void* worker_thread_routine(void* arg) {
                 pthread_cond_wait(&task->session->order_cond, &task->session->order_lock);
             }
 
-            int should_disconnect = process_rpc_command(task->session->fd_s2c, task->command_line);
+            int disconnect_status = process_rpc_command(task->session->fd_s2c, task->command_line);
 
             task->session->expected_ticket++;
             pthread_cond_broadcast(&task->session->order_cond);
             pthread_mutex_unlock(&task->session->order_lock);
             
-            if (should_disconnect) { // find and close the client
+            if (disconnect_status > 0) { // find and close the client
                 pthread_mutex_lock(&sessions_lock);
-                sleep(1);
+
+                if (disconnect_status == 2){
+                    sleep(1);  // 1 secodn wait for rejection message
+                }
+
                 task->session->active = 0;
 
                 close(task->session->fd_c2s);
@@ -683,7 +687,13 @@ int process_rpc_command(int fd_s2c, char* command_line){
     }
 
     if (strcmp(cmd, "Login") == 0){
-        return handle_login(fd_s2c, saveptr);
+        int login_result = handle_login(fd_s2c, saveptr);
+
+        if (login_result == 1){
+            return 2;  // sleep disconnect status as login rejected
+        }
+
+        return 0;
     } else if (strcmp(cmd, "create_canvas") == 0) {
         return handle_create_canvas(fd_s2c, saveptr);
     } else if (strcmp(cmd, "create_rectangle") == 0){
