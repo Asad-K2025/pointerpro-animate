@@ -226,7 +226,7 @@ int handle_login(int fd_s2c, char* saveptr){
     }
 }
 
-int handle_create_canvas(int fd_s2c, char* saveptr) {
+int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     char* width_str = strtok_r(NULL, " ", &saveptr);
     char* height_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
@@ -258,6 +258,29 @@ int handle_create_canvas(int fd_s2c, char* saveptr) {
     }
 
     uint64_t canvas_handle = (uint64_t)new_canvas;
+
+    canvas_share_node_t* new_node = malloc(sizeof(canvas_share_node_t));
+    if (new_node == NULL) {
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    new_node->canvas_handle = canvas_handle;
+    strncpy(new_node->owner_username, session->username, 32);
+    new_node->owner_username[32] = '\0';
+    
+    new_node->shared_usernames = NULL;
+    new_node->shared_count = 0;
+    new_node->shared_capacity = 0;
+    new_node->ref_count = 1; // held by owner
+
+    new_node->barrier_arrived_count = 0;
+    pthread_cond_init(&new_node->barrier_cond, NULL);
+
+    pthread_mutex_lock(&registry_lock);
+    new_node->next = global_canvas_registry;
+    global_canvas_registry = new_node;
+    pthread_mutex_unlock(&registry_lock);
 
     char response[128];
     sprintf(response, "0 %lu\n", canvas_handle);
@@ -471,9 +494,8 @@ int handle_place_sprite(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_destroy_canvas(int fd_s2c, char* saveptr) {
+int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
-
     if (canvas_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
         return 0;
@@ -481,14 +503,65 @@ int handle_destroy_canvas(int fd_s2c, char* saveptr) {
 
     char* canvas_endptr;
     unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
-
     if (*canvas_endptr != '\0' || canvas_address == 0) {
         write(fd_s2c, "-2\n", 3);
         return 0;
     }
 
-    struct canvas* target_canvas = (struct canvas*)canvas_address;
-    animate_destroy_canvas(target_canvas);
+    pthread_mutex_lock(&registry_lock);
+
+    canvas_share_node_t** link = &global_canvas_registry;
+    canvas_share_node_t* target_node = NULL;
+
+    while (*link != NULL) {
+        if ((*link)->canvas_handle == canvas_address) {
+            target_node = *link;
+            break;
+        }
+        link = &((*link)->next);
+    }
+
+    if (target_node != NULL) {
+        target_node->ref_count--;
+
+        int shared_index = -1;
+        for (int i = 0; i < target_node->shared_count; i++) {
+            if (strcmp(target_node->shared_usernames[i], session->username) == 0) {
+                shared_index = i;
+                break;
+            }
+        }
+
+        if (shared_index != -1) {
+            free(target_node->shared_usernames[shared_index]);
+            for (int i = shared_index; i < target_node->shared_count - 1; i++) {
+                target_node->shared_usernames[i] = target_node->shared_usernames[i + 1];
+            }
+            target_node->shared_count--;
+        }
+
+        if (target_node->ref_count <= 0) {
+            *link = target_node->next;
+
+            for (int i = 0; i < target_node->shared_count; i++) {
+                free(target_node->shared_usernames[i]);
+            }
+            if (target_node->shared_usernames != NULL) {
+                free(target_node->shared_usernames);
+            }
+
+            pthread_cond_destroy(&target_node->barrier_cond);
+            free(target_node);
+
+            animate_destroy_canvas((struct canvas*)canvas_address);
+        } else {
+            // other collaborators active, so do not call on this canvas
+        }
+    } else {
+        animate_destroy_canvas((struct canvas*)canvas_address);
+    }
+
+    pthread_mutex_unlock(&registry_lock);
 
     write(fd_s2c, "0\n", 2);
     return 0;
@@ -872,7 +945,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
 
         return 0;
     } else if (strcmp(cmd, "create_canvas") == 0) {
-        return handle_create_canvas(fd_s2c, saveptr);
+        return handle_create_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "create_rectangle") == 0){
         return handle_create_rectangle(fd_s2c, saveptr);
     } else if (strcmp(cmd, "create_circle") == 0){
@@ -886,7 +959,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "place_sprite") == 0) {
         return handle_place_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
-        return handle_destroy_canvas(fd_s2c, saveptr);
+        return handle_destroy_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_up") == 0) {
         return handle_placement_up(fd_s2c, saveptr);
     } else if (strcmp(cmd, "placement_down") == 0) {

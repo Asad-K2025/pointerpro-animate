@@ -37,9 +37,6 @@ int main(int argc, char** argv, char** envp) {
     int fd_c2s = open(fifo_c2s, O_WRONLY);
     int fd_s2c = open(fifo_s2c, O_RDONLY);
 
-    printf("Connected\n");
-    fflush(stdout);
-
     int logged_in = 0;
     char input_buffer[100];
 
