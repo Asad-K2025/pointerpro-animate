@@ -256,6 +256,77 @@ int validate_sprite_access(uint64_t sprite_handle, const char* username) {
     return 0;
 }
 
+canvas_share_node_t* find_canvas_node(uint64_t canvas_handle) {
+    canvas_share_node_t* curr = global_canvas_registry;
+
+    while (curr != NULL) {
+        if (curr->canvas_handle == canvas_handle) {
+            return curr;
+        }
+        curr = curr->next;
+    }
+
+    return NULL;
+}
+
+sprite_node_t* find_sprite_node(uint64_t sprite_handle) {
+    sprite_node_t* curr = global_sprite_registry;
+
+    while (curr != NULL) {
+        if (curr->sprite_handle == sprite_handle) {
+            return curr;
+        }
+
+        curr = curr->next;
+    }
+
+    return NULL;
+}
+
+int client_has_canvas_access(canvas_share_node_t* node, const char* username) {
+    if (strcmp(node->owner_username, username) == 0) {
+        return 1;
+    }
+
+    for (int i = 0; i < node->shared_count; i++) {
+        if (strcmp(node->shared_usernames[i], username) == 0) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+int valid_authorised_username(const char* username) {
+    FILE* file = fopen("users.txt", "r");
+
+    if (file == NULL) {
+        return 0;
+    }
+
+    char line[256];
+
+    while (fgets(line, sizeof(line), file)) {
+        char current_user[64];
+        int balance;
+
+        if (sscanf(line, "%63s %d", current_user, &balance) == 2) {
+            if (strcmp(current_user, username) == 0) {
+                fclose(file);
+
+                if (balance > 0) {
+                    return 1;
+                }
+
+                return 0;
+            }
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
 int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
     char* username = strtok_r(NULL, " ", &saveptr);
     if (username == NULL) {
@@ -630,7 +701,7 @@ int handle_destroy_sprite(int fd_s2c, client_session_t* session, char* saveptr) 
     return 0;
 }
 
-int handle_place_sprite(int fd_s2c, char* saveptr) {
+int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
     char* x_str = strtok_r(NULL, " ", &saveptr);
@@ -656,6 +727,30 @@ int handle_place_sprite(int fd_s2c, char* saveptr) {
         write(fd_s2c, "-2\n", 3);
         return 0;
     }
+
+    pthread_mutex_lock(&registry_lock);
+
+    canvas_share_node_t* canvas_node = find_canvas_node(canvas_address);
+
+    if (canvas_node == NULL ||
+        !client_has_canvas_access(canvas_node, session->username)) {
+
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    sprite_node_t* sprite_node = find_sprite_node(sprite_address);
+
+    if (sprite_node == NULL ||
+        strcmp(sprite_node->owner_username, session->username) != 0) {
+
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    pthread_mutex_unlock(&registry_lock);
 
     struct canvas* target_canvas = (struct canvas*)canvas_address;
     struct sprite* target_sprite = (struct sprite*)sprite_address;
@@ -701,6 +796,11 @@ int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) 
     }
 
     if (target_node != NULL) {
+        if (!client_has_canvas_access(target_node, session->username)) {
+            pthread_mutex_unlock(&registry_lock);
+            write(fd_s2c, "-2\n", 3);
+            return 0;
+        }
         target_node->ref_count--;
 
         int shared_index = -1;
@@ -876,7 +976,7 @@ int handle_destroy_placement(int fd_s2c, client_session_t* session, char* savept
     return 0;
 }
 
-int handle_generate(int fd_s2c, char* saveptr) {
+int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
     char* canvas_str = strtok_r(NULL, " ", &saveptr);
     char* filename = strtok_r(NULL, " ", &saveptr);
     char* start_str = strtok_r(NULL, " ", &saveptr);
@@ -902,6 +1002,20 @@ int handle_generate(int fd_s2c, char* saveptr) {
         write(fd_s2c, "-2\n", 3);
         return 0;
     }
+
+    pthread_mutex_lock(&registry_lock);
+
+    canvas_share_node_t* canvas_node = find_canvas_node(canvas_address);
+
+    if (canvas_node == NULL ||
+        !client_has_canvas_access(canvas_node, session->username)) {
+
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    pthread_mutex_unlock(&registry_lock);
 
     struct canvas* target_canvas = (struct canvas*)canvas_address;
 
@@ -968,6 +1082,11 @@ int handle_generate(int fd_s2c, char* saveptr) {
 int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     char* target_username = strtok_r(NULL, " ", &saveptr);
+
+    if (!valid_authorised_username(target_username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
 
     if (canvas_handle_str == NULL || target_username == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -1073,6 +1192,12 @@ int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
         return 0;
     }
 
+    if (!client_has_canvas_access(target_node, session->username)) {
+        pthread_mutex_unlock(&registry_lock);
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
     pthread_mutex_lock(&sessions_lock);
     int expected_active_sharers = 0;  // calculate how many authorised users logged in
     
@@ -1156,7 +1281,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "destroy_sprite") == 0) {
         return handle_destroy_sprite(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "place_sprite") == 0) {
-        return handle_place_sprite(fd_s2c, saveptr);
+        return handle_place_sprite(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
         return handle_destroy_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_up") == 0) {
@@ -1170,7 +1295,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "destroy_placement") == 0) {
         return handle_destroy_placement(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "generate") == 0) {
-        return handle_generate(fd_s2c, saveptr);
+        return handle_generate(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "share_canvas") == 0){
         return handle_share_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "barrier") == 0) {
