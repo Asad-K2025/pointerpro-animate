@@ -762,6 +762,16 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
     }
 
     uint64_t placement_handle = (uint64_t)new_placement;
+
+    placement_node_t* new_node = malloc(sizeof(placement_node_t));
+    new_node->placement_handle = placement_handle;
+    new_node->canvas_handle = canvas_address;
+
+    pthread_mutex_lock(&registry_lock);
+    new_node->next = global_placement_registry;
+    global_placement_registry = new_node;
+    pthread_mutex_unlock(&registry_lock);
+    
     char response[128];
     sprintf(response, "0 %lu\n", placement_handle);
     write(fd_s2c, response, strlen(response));
