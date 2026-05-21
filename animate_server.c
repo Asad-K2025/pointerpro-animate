@@ -232,6 +232,30 @@ int validate_placement_access(uint64_t placement_handle, const char* username) {
     return 0;
 }
 
+int validate_sprite_access(uint64_t sprite_handle, const char* username) {
+    pthread_mutex_lock(&registry_lock);
+
+    sprite_node_t* curr = global_sprite_registry;
+
+    while (curr != NULL) {
+
+        if (curr->sprite_handle == sprite_handle) {
+
+            int allowed = strcmp(curr->owner_username, username) == 0;
+
+            pthread_mutex_unlock(&registry_lock);
+
+            return allowed;
+        }
+
+        curr = curr->next;
+    }
+
+    pthread_mutex_unlock(&registry_lock);
+
+    return 0;
+}
+
 int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
     char* username = strtok_r(NULL, " ", &saveptr);
     if (username == NULL) {
@@ -352,7 +376,7 @@ int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     return 0;
 }
 
-int handle_create_rectangle(int fd_s2c, char* saveptr) {
+int handle_create_rectangle(int fd_s2c, client_session_t* session, char* saveptr) {
     char* width_str = strtok_r(NULL, " ", &saveptr);
     char* height_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
@@ -386,13 +410,34 @@ int handle_create_rectangle(int fd_s2c, char* saveptr) {
     }
 
     uint64_t sprite_handle = (uint64_t)new_rectangle_sprite;
+
+    sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
+
+    if (new_node == NULL) {
+        animate_destroy_sprite(new_rectangle_sprite);
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    new_node->sprite_handle = sprite_handle;
+
+    strncpy(new_node->owner_username, session->username, 32);
+    new_node->owner_username[32] = '\0';
+
+    pthread_mutex_lock(&registry_lock);
+
+    new_node->next = global_sprite_registry;
+    global_sprite_registry = new_node;
+
+    pthread_mutex_unlock(&registry_lock);
+
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
     write(fd_s2c, response, strlen(response));
     return 0;
 }
 
-int handle_create_circle(int fd_s2c, char* saveptr) {
+int handle_create_circle(int fd_s2c, client_session_t* session, char* saveptr) {
     char* radius_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
     char* filled_str = strtok_r(NULL, " ", &saveptr);
@@ -423,6 +468,27 @@ int handle_create_circle(int fd_s2c, char* saveptr) {
     }
 
     uint64_t sprite_handle = (uint64_t)new_circle_sprite;
+
+    sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
+
+    if (new_node == NULL) {
+        animate_destroy_sprite(new_circle_sprite);
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    new_node->sprite_handle = sprite_handle;
+
+    strncpy(new_node->owner_username, session->username, 32);
+    new_node->owner_username[32] = '\0';
+
+    pthread_mutex_lock(&registry_lock);
+
+    new_node->next = global_sprite_registry;
+    global_sprite_registry = new_node;
+
+    pthread_mutex_unlock(&registry_lock);
+
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
     write(fd_s2c, response, strlen(response));
@@ -472,7 +538,7 @@ int handle_set_animation_params(int fd_s2c, client_session_t* session, char* sav
     return 0;
 }
 
-int handle_create_sprite(int fd_s2c, char* saveptr) {
+int handle_create_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
     char* file_str = strtok_r(NULL, " ", &saveptr);
 
     if (file_str == NULL) {
@@ -487,13 +553,34 @@ int handle_create_sprite(int fd_s2c, char* saveptr) {
     }
 
     uint64_t sprite_handle = (uint64_t)new_sprite;
+
+    sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
+
+    if (new_node == NULL) {
+        animate_destroy_sprite(new_sprite);
+        write(fd_s2c, "-3\n", 3);
+        return 0;
+    }
+
+    new_node->sprite_handle = sprite_handle;
+
+    strncpy(new_node->owner_username, session->username, 32);
+    new_node->owner_username[32] = '\0';
+
+    pthread_mutex_lock(&registry_lock);
+
+    new_node->next = global_sprite_registry;
+    global_sprite_registry = new_node;
+
+    pthread_mutex_unlock(&registry_lock);
+
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
     write(fd_s2c, response, strlen(response));
     return 0;
 }
 
-int handle_destroy_sprite(int fd_s2c, char* saveptr) {
+int handle_destroy_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
     char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
 
     if (sprite_handle_str == NULL) {
@@ -509,8 +596,31 @@ int handle_destroy_sprite(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_sprite_access(sprite_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
     struct sprite* target_sprite = (struct sprite*)sprite_address;
     bool failed = animate_destroy_sprite(target_sprite);
+
+    if (!failed) {
+        pthread_mutex_lock(&registry_lock);
+
+        sprite_node_t** link = &global_sprite_registry;
+
+        while (*link != NULL) {
+            if ((*link)->sprite_handle == sprite_address) {
+                sprite_node_t* temp = *link;
+                *link = (*link)->next;
+                free(temp);
+                break;
+            }
+            link = &((*link)->next);
+        }
+
+        pthread_mutex_unlock(&registry_lock);
+    }
 
     if (failed) {
         write(fd_s2c, "0 1\n", 4);
@@ -1036,15 +1146,15 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "create_canvas") == 0) {
         return handle_create_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "create_rectangle") == 0){
-        return handle_create_rectangle(fd_s2c, saveptr);
+        return handle_create_rectangle(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "create_circle") == 0){
-        return handle_create_circle(fd_s2c, saveptr);
+        return handle_create_circle(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "set_animation_params") == 0) {
         return handle_set_animation_params(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "create_sprite") == 0) {
-        return handle_create_sprite(fd_s2c, saveptr);
+        return handle_create_sprite(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "destroy_sprite") == 0) {
-        return handle_destroy_sprite(fd_s2c, saveptr);
+        return handle_destroy_sprite(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "place_sprite") == 0) {
         return handle_place_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
