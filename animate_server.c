@@ -81,6 +81,21 @@ pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 
 task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
+typedef struct sprite_node {
+    uint64_t sprite_handle;
+    char owner_username[33];
+    struct sprite_node* next;
+} sprite_node_t;
+
+typedef struct placement_node {
+    uint64_t placement_handle;
+    uint64_t canvas_handle;
+    struct placement_node* next;
+} placement_node_t;
+
+sprite_node_t* global_sprite_registry = NULL;
+placement_node_t* global_placement_registry = NULL;
+
 void queue_push(const char* command, client_session_t* session, uint32_t ticket) {
     rpc_task_t* new_task = malloc(sizeof(rpc_task_t));
     if (new_task == NULL) {
@@ -169,6 +184,52 @@ void* worker_thread_routine(void* arg) {
 void handle_sigusr1(int singal_number, siginfo_t* info, void* context){
     pending_client_pid = info->si_pid;
     client_requested = 1;
+}
+
+int validate_placement_access(uint64_t placement_handle, const char* username) {
+    pthread_mutex_lock(&registry_lock);
+
+    placement_node_t* curr = global_placement_registry;
+
+    while (curr != NULL) {
+        if (curr->placement_handle == placement_handle) {
+
+            uint64_t canvas_handle = curr->canvas_handle;
+
+            canvas_share_node_t* canvas_curr = global_canvas_registry;
+
+            while (canvas_curr != NULL) {
+
+                if (canvas_curr->canvas_handle == canvas_handle) {
+
+                    if (strcmp(canvas_curr->owner_username, username) == 0) {
+                        pthread_mutex_unlock(&registry_lock);
+                        return 1;
+                    }
+
+                    for (int i = 0; i < canvas_curr->shared_count; i++) {
+                        if (strcmp(canvas_curr->shared_usernames[i], username) == 0) {
+                            pthread_mutex_unlock(&registry_lock);
+                            return 1;
+                        }
+                    }
+
+                    pthread_mutex_unlock(&registry_lock);
+                    return 0;
+                }
+
+                canvas_curr = canvas_curr->next;
+            }
+
+            pthread_mutex_unlock(&registry_lock);
+            return 0;
+        }
+
+        curr = curr->next;
+    }
+
+    pthread_mutex_unlock(&registry_lock);
+    return 0;
 }
 
 int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
@@ -368,7 +429,7 @@ int handle_create_circle(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_set_animation_params(int fd_s2c, char* saveptr) {
+int handle_set_animation_params(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     char* velocity_x_str = strtok_r(NULL, " ", &saveptr);
     char* velocity_y_str = strtok_r(NULL, " ", &saveptr);
@@ -394,6 +455,11 @@ int handle_set_animation_params(int fd_s2c, char* saveptr) {
 
     if (*placement_endptr != '\0' || *velocity_x_endptr != '\0' || *velocity_y_endptr != '\0' || *acceleration_x_endptr != '\0' || *acceleration_y_endptr != '\0' ||
         placement_address <= 0) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
+
+    if (!validate_placement_access(placement_address, session->username)) {
         write(fd_s2c, "-2\n", 3);
         return 0;
     }
@@ -570,7 +636,7 @@ int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) 
     return 0;
 }
 
-int handle_placement_up(int fd_s2c, char* saveptr) {
+int handle_placement_up(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -585,6 +651,10 @@ int handle_placement_up(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_placement_access(placement_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_up(target_placement);
 
@@ -592,7 +662,7 @@ int handle_placement_up(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_placement_down(int fd_s2c, char* saveptr) {
+int handle_placement_down(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -607,6 +677,10 @@ int handle_placement_down(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_placement_access(placement_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_down(target_placement);
 
@@ -614,7 +688,7 @@ int handle_placement_down(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_placement_top(int fd_s2c, char* saveptr) {
+int handle_placement_top(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -629,6 +703,10 @@ int handle_placement_top(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_placement_access(placement_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_top(target_placement);
 
@@ -636,7 +714,7 @@ int handle_placement_top(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_placement_bottom(int fd_s2c, char* saveptr) {
+int handle_placement_bottom(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -651,6 +729,10 @@ int handle_placement_bottom(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_placement_access(placement_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_bottom(target_placement);
 
@@ -658,7 +740,7 @@ int handle_placement_bottom(int fd_s2c, char* saveptr) {
     return 0;
 }
 
-int handle_destroy_placement(int fd_s2c, char* saveptr) {
+int handle_destroy_placement(int fd_s2c, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
         write(fd_s2c, "-1\n", 3);
@@ -673,6 +755,10 @@ int handle_destroy_placement(int fd_s2c, char* saveptr) {
         return 0;
     }
 
+    if (!validate_placement_access(placement_address, session->username)) {
+        write(fd_s2c, "-2\n", 3);
+        return 0;
+    }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_destroy_placement(target_placement);
 
@@ -954,7 +1040,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "create_circle") == 0){
         return handle_create_circle(fd_s2c, saveptr);
     } else if (strcmp(cmd, "set_animation_params") == 0) {
-        return handle_set_animation_params(fd_s2c, saveptr);
+        return handle_set_animation_params(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "create_sprite") == 0) {
         return handle_create_sprite(fd_s2c, saveptr);
     } else if (strcmp(cmd, "destroy_sprite") == 0) {
@@ -964,15 +1050,15 @@ int process_rpc_command(client_session_t* session, char* command_line){
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
         return handle_destroy_canvas(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_up") == 0) {
-        return handle_placement_up(fd_s2c, saveptr);
+        return handle_placement_up(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_down") == 0) {
-        return handle_placement_down(fd_s2c, saveptr);
+        return handle_placement_down(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_top") == 0) {
-        return handle_placement_top(fd_s2c, saveptr);
+        return handle_placement_top(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "placement_bottom") == 0) {
-        return handle_placement_bottom(fd_s2c, saveptr);
+        return handle_placement_bottom(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "destroy_placement") == 0) {
-        return handle_destroy_placement(fd_s2c, saveptr);
+        return handle_destroy_placement(fd_s2c, session, saveptr);
     } else if (strcmp(cmd, "generate") == 0) {
         return handle_generate(fd_s2c, saveptr);
     } else if (strcmp(cmd, "share_canvas") == 0){
@@ -990,7 +1076,16 @@ int process_rpc_command(client_session_t* session, char* command_line){
 
 int main(int argc, char** argv, char** envp) {
 
+    if (argc != 2){
+        return 1;
+    }
+
     int thread_pool_size = atoi(argv[1]);
+
+    if (thread_pool_size < 1){
+        return 1;
+    }
+
     pid_t process_id = getpid();
     printf("Server PID: %ld\n", (long)process_id);
     fflush(stdout);
@@ -1003,7 +1098,9 @@ int main(int argc, char** argv, char** envp) {
 
     pthread_t* threads = malloc(sizeof(pthread_t) * thread_pool_size);
     for (int i = 0; i < thread_pool_size; i++){
-        pthread_create(&threads[i], NULL, worker_thread_routine, NULL);
+        if (pthread_create(&threads[i], NULL, worker_thread_routine, NULL) != 0){
+            return 1;  // error occured with creating threads
+        }
     }
 
     while (1){
