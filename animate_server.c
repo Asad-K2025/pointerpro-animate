@@ -79,6 +79,7 @@ typedef struct canvas_share_node {
 
 canvas_share_node_t* global_canvas_registry = NULL;
 pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t animate_lock = PTHREAD_MUTEX_INITIALIZER;
 
 task_queue_t work_queue = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
 
@@ -474,8 +475,10 @@ int handle_create_canvas(char* response_out, client_session_t* session, char* sa
         strcpy(response_out, "-2\n");
         return 0;
     }
-
+    
+    pthread_mutex_lock(&animate_lock);
     struct canvas* new_canvas = animate_create_canvas((size_t)height, (size_t)width, (size_t)color);
+    pthread_mutex_unlock(&animate_lock);
 
     if (new_canvas == NULL) {
         strcpy(response_out, "-3\n");
@@ -538,7 +541,10 @@ int handle_create_rectangle(char* response_out, client_session_t* session, char*
         return 0;
     }
 
+    pthread_mutex_lock(&animate_lock);
     struct sprite* new_rectangle_sprite = animate_create_rectangle((size_t)width, (size_t)height, (color_t)color, (bool)filled);
+    pthread_mutex_unlock(&animate_lock);
+
     if (new_rectangle_sprite == NULL) {
         strcpy(response_out, "-3\n");
         return 0;
@@ -549,7 +555,9 @@ int handle_create_rectangle(char* response_out, client_session_t* session, char*
     sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
 
     if (new_node == NULL) {
+        pthread_mutex_lock(&animate_lock);
         animate_destroy_sprite(new_rectangle_sprite);
+        pthread_mutex_unlock(&animate_lock);
         strcpy(response_out, "-3\n");
         return 0;
     }
@@ -596,7 +604,10 @@ int handle_create_circle(char* response_out, client_session_t* session, char* sa
         return 0;
     }
 
+    pthread_mutex_lock(&animate_lock);
     struct sprite* new_circle_sprite = animate_create_circle((size_t)radius, (color_t)color, (bool)filled);
+    pthread_mutex_unlock(&animate_lock);
+
     if (new_circle_sprite == NULL) {
         strcpy(response_out, "-3\n");
         return 0;
@@ -607,7 +618,9 @@ int handle_create_circle(char* response_out, client_session_t* session, char* sa
     sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
 
     if (new_node == NULL) {
+        pthread_mutex_lock(&animate_lock);
         animate_destroy_sprite(new_circle_sprite);
+        pthread_mutex_unlock(&animate_lock);
         strcpy(response_out, "-3\n");
         return 0;
     }
@@ -667,7 +680,9 @@ int handle_set_animation_params(char* response_out, client_session_t* session, c
 
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     
+    pthread_mutex_lock(&animate_lock);
     animate_set_animation_params(target_placement, (ssize_t)velocity_x, (ssize_t)velocity_y, (ssize_t)acceleration_x, (ssize_t)acceleration_y);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -681,7 +696,10 @@ int handle_create_sprite(char* response_out, client_session_t* session, char* sa
         return 0;
     }
 
+    pthread_mutex_lock(&animate_lock);
     struct sprite* new_sprite = animate_create_sprite(file_str);
+    pthread_mutex_unlock(&animate_lock);
+
     if (new_sprite == NULL) {
         strcpy(response_out, "-3\n");
         return 0;
@@ -692,7 +710,9 @@ int handle_create_sprite(char* response_out, client_session_t* session, char* sa
     sprite_node_t* new_node = malloc(sizeof(sprite_node_t));
 
     if (new_node == NULL) {
+        pthread_mutex_lock(&animate_lock);
         animate_destroy_sprite(new_sprite);
+        pthread_mutex_unlock(&animate_lock);
         strcpy(response_out, "-3\n");
         return 0;
     }
@@ -737,7 +757,9 @@ int handle_destroy_sprite(char* response_out, client_session_t* session, char* s
     }
 
     struct sprite* target_sprite = (struct sprite*)sprite_address;
+    pthread_mutex_lock(&animate_lock);
     bool failed = animate_destroy_sprite(target_sprite);
+    pthread_mutex_unlock(&animate_lock);
 
     if (!failed) {
         pthread_mutex_lock(&registry_lock);
@@ -819,7 +841,10 @@ int handle_place_sprite(char* response_out, client_session_t* session, char* sav
     struct canvas* target_canvas = (struct canvas*)canvas_address;
     struct sprite* target_sprite = (struct sprite*)sprite_address;
 
+    pthread_mutex_lock(&animate_lock);
     struct sprite_placement* new_placement = animate_place_sprite(target_canvas, target_sprite, (ssize_t)x, (ssize_t)y);
+    pthread_mutex_unlock(&animate_lock);
+
     if (new_placement == NULL) {
         strcpy(response_out, "-3\n");
         return 0;
@@ -828,6 +853,15 @@ int handle_place_sprite(char* response_out, client_session_t* session, char* sav
     uint64_t placement_handle = (uint64_t)new_placement;
 
     placement_node_t* new_node = malloc(sizeof(placement_node_t));
+
+    if (new_node == NULL) {
+        pthread_mutex_lock(&animate_lock);
+        animate_destroy_placement(new_placement);
+        pthread_mutex_unlock(&animate_lock);
+        strcpy(response_out, "-3\n");
+        return 0;
+    }
+
     new_node->placement_handle = placement_handle;
     new_node->canvas_handle = canvas_address;
 
@@ -906,12 +940,16 @@ int handle_destroy_canvas(char* response_out, client_session_t* session, char* s
             pthread_cond_destroy(&target_node->barrier_cond);
             free(target_node);
 
+            pthread_mutex_lock(&animate_lock);
             animate_destroy_canvas((struct canvas*)canvas_address);
+            pthread_mutex_unlock(&animate_lock);
         } else {
             // other collaborators active, so do not call on this canvas
         }
     } else {
+        pthread_mutex_lock(&animate_lock);
         animate_destroy_canvas((struct canvas*)canvas_address);
+        pthread_mutex_unlock(&animate_lock);
     }
 
     pthread_mutex_unlock(&registry_lock);
@@ -940,7 +978,9 @@ int handle_placement_up(char* response_out, client_session_t* session, char* sav
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    pthread_mutex_lock(&animate_lock);
     animate_placement_up(target_placement);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -966,7 +1006,9 @@ int handle_placement_down(char* response_out, client_session_t* session, char* s
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    pthread_mutex_lock(&animate_lock);
     animate_placement_down(target_placement);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -992,7 +1034,9 @@ int handle_placement_top(char* response_out, client_session_t* session, char* sa
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    pthread_mutex_lock(&animate_lock);
     animate_placement_top(target_placement);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -1018,7 +1062,9 @@ int handle_placement_bottom(char* response_out, client_session_t* session, char*
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    pthread_mutex_lock(&animate_lock);
     animate_placement_bottom(target_placement);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -1044,7 +1090,9 @@ int handle_destroy_placement(char* response_out, client_session_t* session, char
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
+    pthread_mutex_lock(&animate_lock);
     animate_destroy_placement(target_placement);
+    pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
     return 0;
@@ -1106,7 +1154,10 @@ int handle_generate(char* response_out, client_session_t* session, char* saveptr
         return 0;
     }
 
+    pthread_mutex_lock(&animate_lock);
     size_t frame_bytes = animate_frame_size_bytes(target_canvas);
+    pthread_mutex_unlock(&animate_lock);
+
     if (frame_bytes == 0) {
         fclose(dat_file);
         strcpy(response_out, "-3\n");
@@ -1121,7 +1172,9 @@ int handle_generate(char* response_out, client_session_t* session, char* saveptr
     }
 
     for (long frame = start_frame; frame <= end_frame; frame++) {
+        pthread_mutex_lock(&animate_lock);
         animate_generate_frame(target_canvas, (size_t)frame, (size_t)frame_rate, frame_buffer);
+        pthread_mutex_unlock(&animate_lock);
         
         size_t written = fwrite(frame_buffer, 1, frame_bytes, dat_file);
         if (written != frame_bytes) {
@@ -1504,6 +1557,7 @@ int main(int argc, char** argv, char** envp) {
                 if (fds[i].revents & POLLIN) {
                     pthread_mutex_lock(&sessions_lock);
                     client_session_t* session = active_sessions[session_indices[i]];
+                    pthread_mutex_unlock(&sessions_lock);
                     
                     // read into buffer rihgt after any leftover parital data
                     size_t space_left = sizeof(session->read_buf) - session->read_len - 1;
