@@ -26,9 +26,10 @@ typedef struct {  // tracks every authenticated and active client
 
     // tickets ensure order of requests for each client
     uint32_t next_ticket;
-    uint32_t expected_ticket; // currently allowed to write to pipe
-    pthread_mutex_t order_lock;
-    pthread_cond_t order_cond;
+    char** pending_responses;
+    size_t pending_capacity;
+    uint32_t next_response_ticket;
+    pthread_mutex_t response_lock;
 } client_session_t;
 
 client_session_t* active_sessions = NULL;
@@ -49,7 +50,7 @@ typedef struct {
     pthread_cond_t cond;
 } task_queue_t;
 
-int process_rpc_command(client_session_t* session, char* command_line);
+int process_rpc_command(client_session_t* session, char* command_line, char* response_out);
 
 struct canvas {  // defien struct to access it's width and height
     size_t width;
@@ -138,21 +139,56 @@ rpc_task_t* queue_pop(void) {
     return task;
 }
 
+void send_ordered_response(client_session_t* session, uint32_t ticket, const char* response) {
+    pthread_mutex_lock(&session->response_lock);
+
+    if (ticket >= session->pending_capacity) {
+        size_t new_capacity = ticket + 8;
+
+        char** new_pending = realloc(session->pending_responses,
+                                     sizeof(char*) * new_capacity);
+
+        if (new_pending == NULL) {
+            pthread_mutex_unlock(&session->response_lock);
+            return;
+        }
+
+        for (size_t i = session->pending_capacity; i < new_capacity; i++) {
+            new_pending[i] = NULL;
+        }
+
+        session->pending_responses = new_pending;
+        session->pending_capacity = new_capacity;
+    }
+
+    session->pending_responses[ticket] = strdup(response);
+
+    while (session->next_response_ticket < session->pending_capacity &&
+           session->pending_responses[session->next_response_ticket] != NULL) {
+
+        char* current =
+            session->pending_responses[session->next_response_ticket];
+
+        write(session->fd_s2c, current, strlen(current));
+
+        free(current);
+
+        session->pending_responses[session->next_response_ticket] = NULL;
+
+        session->next_response_ticket++;
+    }
+
+    pthread_mutex_unlock(&session->response_lock);
+}
+
 void* worker_thread_routine(void* arg) {
     while (1) {
         rpc_task_t* task = queue_pop();
         if (task != NULL) {
-            pthread_mutex_lock(&task->session->order_lock);
-            while (task->session->expected_ticket != task->ticket) {
-                pthread_cond_wait(&task->session->order_cond, &task->session->order_lock);
-            }
+            char response[512];
+            int disconnect_status = process_rpc_command(task->session, task->command_line, response);
+            send_ordered_response(task->session, task->ticket, response);
 
-            int disconnect_status = process_rpc_command(task->session, task->command_line);
-
-            task->session->expected_ticket++;
-            pthread_cond_broadcast(&task->session->order_cond);
-            pthread_mutex_unlock(&task->session->order_lock);
-            
             if (disconnect_status > 0) { // find and close the client
                 pthread_mutex_lock(&sessions_lock);
 
@@ -171,9 +207,12 @@ void* worker_thread_routine(void* arg) {
                 sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)task->session->client_pid);
                 unlink(fifo_c2s);
                 unlink(fifo_s2c);
+                for (size_t i = 0; i < task->session->pending_capacity; i++) {
+                    free(task->session->pending_responses[i]);
+                }
+                free(task->session->pending_responses);
+                pthread_mutex_destroy(&task->session->response_lock);
                 pthread_mutex_unlock(&sessions_lock);
-                pthread_mutex_destroy(&task->session->order_lock);
-                pthread_cond_destroy(&task->session->order_cond);
             }
             free(task);
         }
@@ -327,15 +366,15 @@ int valid_authorised_username(const char* username) {
     return 0;
 }
 
-int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
+int handle_login(char* response_out, client_session_t* session, char* saveptr){
     char* username = strtok_r(NULL, " ", &saveptr);
     if (username == NULL) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (strlen(username) > 32){
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -344,7 +383,7 @@ int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
 
     FILE* file = fopen("users.txt", "r");
     if (file == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 1;
     }
 
@@ -371,27 +410,27 @@ int handle_login(int fd_s2c, client_session_t* session, char* saveptr){
     if (found) {
         if (balance > 0) {
             sprintf(response, "%d\n", balance);
-            write(fd_s2c, response, strlen(response));
+            strcpy(response_out, response);
             return 0;
         } else {
             sprintf(response, "Reject BALANCE\n");
-            write(fd_s2c, response, strlen(response));
+            strcpy(response_out, response);
             return 1;
         }
     } else {
         sprintf(response, "Reject UNAUTHORISED\n");
-        write(fd_s2c, response, strlen(response));
+        strcpy(response_out, response);
         return 1;
     }
 }
 
-int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_create_canvas(char* response_out, client_session_t* session, char* saveptr) {
     char* width_str = strtok_r(NULL, " ", &saveptr);
     char* height_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
 
     if (width_str == NULL || height_str == NULL || color_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -405,14 +444,14 @@ int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (*width_end_pointer != '\0' || *height_end_pointer != '\0' || *color_end_pointer != '\0' ||
         width <= 0 || height <= 0 || color < 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     struct canvas* new_canvas = animate_create_canvas((size_t)height, (size_t)width, (size_t)color);
 
     if (new_canvas == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -420,7 +459,7 @@ int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
 
     canvas_share_node_t* new_node = malloc(sizeof(canvas_share_node_t));
     if (new_node == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -441,20 +480,18 @@ int handle_create_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     global_canvas_registry = new_node;
     pthread_mutex_unlock(&registry_lock);
 
-    char response[128];
-    sprintf(response, "0 %lu\n", canvas_handle);
-    write(fd_s2c, response, strlen(response));
+    sprintf(response_out, "0 %lu\n", canvas_handle);
     return 0;
 }
 
-int handle_create_rectangle(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_create_rectangle(char* response_out, client_session_t* session, char* saveptr) {
     char* width_str = strtok_r(NULL, " ", &saveptr);
     char* height_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
     char* filled_str = strtok_r(NULL, " ", &saveptr);
 
     if (width_str == NULL || height_str == NULL || color_str == NULL || filled_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -470,13 +507,13 @@ int handle_create_rectangle(int fd_s2c, client_session_t* session, char* saveptr
 
     if (*width_endptr != '\0' || *height_endptr != '\0' || *color_endptr != '\0' || *filled_endptr != '\0' ||
         width <= 0 || height <= 0 || color < 0 || (filled != 0 && filled != 1)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     struct sprite* new_rectangle_sprite = animate_create_rectangle((size_t)width, (size_t)height, (color_t)color, (bool)filled);
     if (new_rectangle_sprite == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -486,7 +523,7 @@ int handle_create_rectangle(int fd_s2c, client_session_t* session, char* saveptr
 
     if (new_node == NULL) {
         animate_destroy_sprite(new_rectangle_sprite);
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -504,17 +541,17 @@ int handle_create_rectangle(int fd_s2c, client_session_t* session, char* saveptr
 
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
-    write(fd_s2c, response, strlen(response));
+    strcpy(response_out, response);
     return 0;
 }
 
-int handle_create_circle(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_create_circle(char* response_out, client_session_t* session, char* saveptr) {
     char* radius_str = strtok_r(NULL, " ", &saveptr);
     char* color_str = strtok_r(NULL, " ", &saveptr);
     char* filled_str = strtok_r(NULL, " ", &saveptr);
 
     if (radius_str == NULL || color_str == NULL || filled_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -528,13 +565,13 @@ int handle_create_circle(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (*radius_endptr != '\0' || *color_endptr != '\0' || *filled_endptr != '\0' ||
         radius <= 0 || color < 0 || (filled != 0 && filled != 1)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     struct sprite* new_circle_sprite = animate_create_circle((size_t)radius, (color_t)color, (bool)filled);
     if (new_circle_sprite == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -544,7 +581,7 @@ int handle_create_circle(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (new_node == NULL) {
         animate_destroy_sprite(new_circle_sprite);
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -562,11 +599,11 @@ int handle_create_circle(int fd_s2c, client_session_t* session, char* saveptr) {
 
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
-    write(fd_s2c, response, strlen(response));
+    strcpy(response_out, response);
     return 0;
 }
 
-int handle_set_animation_params(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_set_animation_params(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     char* velocity_x_str = strtok_r(NULL, " ", &saveptr);
     char* velocity_y_str = strtok_r(NULL, " ", &saveptr);
@@ -574,7 +611,7 @@ int handle_set_animation_params(int fd_s2c, client_session_t* session, char* sav
     char* acceleration_y_str = strtok_r(NULL, " ", &saveptr);
 
     if (placement_handle_str == NULL || velocity_x_str == NULL || velocity_y_str == NULL || acceleration_x_str == NULL || acceleration_y_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -592,12 +629,12 @@ int handle_set_animation_params(int fd_s2c, client_session_t* session, char* sav
 
     if (*placement_endptr != '\0' || *velocity_x_endptr != '\0' || *velocity_y_endptr != '\0' || *acceleration_x_endptr != '\0' || *acceleration_y_endptr != '\0' ||
         placement_address <= 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -605,21 +642,21 @@ int handle_set_animation_params(int fd_s2c, client_session_t* session, char* sav
     
     animate_set_animation_params(target_placement, (ssize_t)velocity_x, (ssize_t)velocity_y, (ssize_t)acceleration_x, (ssize_t)acceleration_y);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_create_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_create_sprite(char* response_out, client_session_t* session, char* saveptr) {
     char* file_str = strtok_r(NULL, " ", &saveptr);
 
     if (file_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
     struct sprite* new_sprite = animate_create_sprite(file_str);
     if (new_sprite == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -629,7 +666,7 @@ int handle_create_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (new_node == NULL) {
         animate_destroy_sprite(new_sprite);
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -647,15 +684,15 @@ int handle_create_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
 
     char response[128];
     sprintf(response, "0 %lu\n", sprite_handle);
-    write(fd_s2c, response, strlen(response));
+    strcpy(response_out, response);
     return 0;
 }
 
-int handle_destroy_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_destroy_sprite(char* response_out, client_session_t* session, char* saveptr) {
     char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
 
     if (sprite_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -663,12 +700,12 @@ int handle_destroy_sprite(int fd_s2c, client_session_t* session, char* saveptr) 
     unsigned long long sprite_address = strtoull(sprite_handle_str, &sprite_endptr, 10);
 
     if (*sprite_endptr != '\0' || sprite_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_sprite_access(sprite_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -694,21 +731,21 @@ int handle_destroy_sprite(int fd_s2c, client_session_t* session, char* saveptr) 
     }
 
     if (failed) {
-        write(fd_s2c, "0 1\n", 4);
+        strcpy(response_out, "0 1\n");
     } else {
-        write(fd_s2c, "0 0\n", 4);
+        strcpy(response_out, "0 0\n");
     }
     return 0;
 }
 
-int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_place_sprite(char* response_out, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     char* sprite_handle_str = strtok_r(NULL, " ", &saveptr);
     char* x_str = strtok_r(NULL, " ", &saveptr);
     char* y_str = strtok_r(NULL, " ", &saveptr);
 
     if (canvas_handle_str == NULL || sprite_handle_str == NULL || x_str == NULL || y_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -724,7 +761,7 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (*canvas_endptr != '\0' || *sprite_endptr != '\0' || *x_endptr != '\0' || *y_endptr != '\0' ||
         canvas_address == 0 || sprite_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -736,7 +773,7 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
         !client_has_canvas_access(canvas_node, session->username)) {
 
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -746,7 +783,7 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
         strcmp(sprite_node->owner_username, session->username) != 0) {
 
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -757,7 +794,7 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
 
     struct sprite_placement* new_placement = animate_place_sprite(target_canvas, target_sprite, (ssize_t)x, (ssize_t)y);
     if (new_placement == NULL) {
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -771,24 +808,24 @@ int handle_place_sprite(int fd_s2c, client_session_t* session, char* saveptr) {
     new_node->next = global_placement_registry;
     global_placement_registry = new_node;
     pthread_mutex_unlock(&registry_lock);
-    
+
     char response[128];
     sprintf(response, "0 %lu\n", placement_handle);
-    write(fd_s2c, response, strlen(response));
+    strcpy(response_out, response);
     return 0;
 }
 
-int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_destroy_canvas(char* response_out, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     if (canvas_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
     char* canvas_endptr;
     unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
     if (*canvas_endptr != '\0' || canvas_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -808,7 +845,7 @@ int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) 
     if (target_node != NULL) {
         if (!client_has_canvas_access(target_node, session->username)) {
             pthread_mutex_unlock(&registry_lock);
-            write(fd_s2c, "-2\n", 3);
+            strcpy(response_out, "-2\n");
             return 0;
         }
         target_node->ref_count--;
@@ -852,14 +889,14 @@ int handle_destroy_canvas(int fd_s2c, client_session_t* session, char* saveptr) 
 
     pthread_mutex_unlock(&registry_lock);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_placement_up(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_placement_up(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -867,25 +904,25 @@ int handle_placement_up(int fd_s2c, client_session_t* session, char* saveptr) {
     unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
 
     if (*placement_endptr != '\0' || placement_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_up(target_placement);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_placement_down(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_placement_down(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -893,25 +930,25 @@ int handle_placement_down(int fd_s2c, client_session_t* session, char* saveptr) 
     unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
 
     if (*placement_endptr != '\0' || placement_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_down(target_placement);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_placement_top(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_placement_top(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -919,25 +956,25 @@ int handle_placement_top(int fd_s2c, client_session_t* session, char* saveptr) {
     unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
 
     if (*placement_endptr != '\0' || placement_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_top(target_placement);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_placement_bottom(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_placement_bottom(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -945,25 +982,25 @@ int handle_placement_bottom(int fd_s2c, client_session_t* session, char* saveptr
     unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
 
     if (*placement_endptr != '\0' || placement_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_placement_bottom(target_placement);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_destroy_placement(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_destroy_placement(char* response_out, client_session_t* session, char* saveptr) {
     char* placement_handle_str = strtok_r(NULL, " ", &saveptr);
     if (placement_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -971,22 +1008,22 @@ int handle_destroy_placement(int fd_s2c, client_session_t* session, char* savept
     unsigned long long placement_address = strtoull(placement_handle_str, &placement_endptr, 10);
 
     if (*placement_endptr != '\0' || placement_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!validate_placement_access(placement_address, session->username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     animate_destroy_placement(target_placement);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_generate(char* response_out, client_session_t* session, char* saveptr) {
     char* canvas_str = strtok_r(NULL, " ", &saveptr);
     char* filename = strtok_r(NULL, " ", &saveptr);
     char* start_str = strtok_r(NULL, " ", &saveptr);
@@ -994,7 +1031,7 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
     char* framerate_str = strtok_r(NULL, " ", &saveptr);
 
     if (!canvas_str || !filename || !start_str || !end_str || !framerate_str) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -1009,7 +1046,7 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (*endptr1 != '\0' || *endptr2 != '\0' || *endptr3 != '\0' || *endptr4 != '\0' ||
         canvas_address == 0 || start_frame < 0 || end_frame < start_frame || frame_rate <= 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1021,7 +1058,7 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
         !client_has_canvas_access(canvas_node, session->username)) {
 
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1038,21 +1075,21 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
 
     FILE* dat_file = fopen(dat_path, "wb");
     if (!dat_file) {
-        write(fd_s2c, "0 -1\n", 5);  // data wrtie failed
+        strcpy(response_out, "0 -1\n");  // data wrtie failed
         return 0;
     }
 
     size_t frame_bytes = animate_frame_size_bytes(target_canvas);
     if (frame_bytes == 0) {
         fclose(dat_file);
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
     void* frame_buffer = malloc(frame_bytes);
     if (!frame_buffer) {
         fclose(dat_file);
-        write(fd_s2c, "-3\n", 3);
+        strcpy(response_out, "-3\n");
         return 0;
     }
 
@@ -1063,7 +1100,7 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
         if (written != frame_bytes) {
             free(frame_buffer);
             fclose(dat_file);
-            write(fd_s2c, "0 -1\n", 5); // data write failed
+            strcpy(response_out, "0 -1\n"); // data write failed
             return 0;
         }
     }
@@ -1081,25 +1118,25 @@ int handle_generate(int fd_s2c, client_session_t* session, char* saveptr) {
 
     int sys_status = system(ffmpeg_cmd);
     if (sys_status != 0) {
-        write(fd_s2c, "0 0 -1\n", 7); // .mp4 or .log wrtie failed
+        strcpy(response_out, "0 0 -1\n"); // .mp4 or .log wrtie failed
         return 0;
     }
 
-    write(fd_s2c, "0 0 0\n", 6);
+    strcpy(response_out, "0 0 0\n");
     return 0;
 }
 
-int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_share_canvas(char* response_out, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     char* target_username = strtok_r(NULL, " ", &saveptr);
 
     if (!valid_authorised_username(target_username)) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (canvas_handle_str == NULL || target_username == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -1107,7 +1144,7 @@ int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
     unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
 
     if (*canvas_endptr != '\0' || canvas_address == 0 || strlen(target_username) > 32) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1125,7 +1162,7 @@ int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (target_node == NULL) {  // canvas deosn't exist
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1139,7 +1176,7 @@ int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (!has_access) {
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3); // client doesn't have right to share it
+        strcpy(response_out, "-2\n"); // client doesn't have right to share it
         return 0;
     }
 
@@ -1166,15 +1203,15 @@ int handle_share_canvas(int fd_s2c, client_session_t* session, char* saveptr) {
 
     pthread_mutex_unlock(&registry_lock);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
-int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
+int handle_barrier(char* response_out, client_session_t* session, char* saveptr) {
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
 
     if (canvas_handle_str == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -1182,7 +1219,7 @@ int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
     unsigned long long canvas_address = strtoull(canvas_handle_str, &canvas_endptr, 10);
 
     if (*canvas_endptr != '\0' || canvas_address == 0) {
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1198,13 +1235,13 @@ int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
 
     if (target_node == NULL) {
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
     if (!client_has_canvas_access(target_node, session->username)) {
         pthread_mutex_unlock(&registry_lock);
-        write(fd_s2c, "-2\n", 3);
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1241,14 +1278,12 @@ int handle_barrier(int fd_s2c, client_session_t* session, char* saveptr) {
 
     pthread_mutex_unlock(&registry_lock);
 
-    write(fd_s2c, "0\n", 2);
+    strcpy(response_out, "0\n");
     return 0;
 }
 
 // after processing, return 1 for should_disconnect, 0 otherwise
-int process_rpc_command(client_session_t* session, char* command_line){
-    int fd_s2c = session->fd_s2c;
-
+int process_rpc_command(client_session_t* session, char* command_line, char* response_out){
     size_t len = strlen(command_line);
     if (len > 0 && command_line[len - 1] == '\n'){
         command_line[len - 1] = '\0';
@@ -1258,7 +1293,7 @@ int process_rpc_command(client_session_t* session, char* command_line){
     char* cmd = strtok_r(command_line, " ", &saveptr);
 
     if (cmd == NULL) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
@@ -1266,56 +1301,55 @@ int process_rpc_command(client_session_t* session, char* command_line){
     if (strcmp(cmd, "set_animation_function") == 0 ||
         strcmp(cmd, "frame_size_bytes") == 0 ||
         strcmp(cmd, "generate_frame") == 0) {
-        write(fd_s2c, "-1\n", 3);
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
     if (strcmp(cmd, "Login") == 0){
-        int login_result = handle_login(fd_s2c, session, saveptr);
+        int login_result = handle_login(response_out, session, saveptr);
 
         if (login_result == 1){
             return 2;  // sleep disconnect status as login rejected
         }
-
         return 0;
     } else if (strcmp(cmd, "create_canvas") == 0) {
-        return handle_create_canvas(fd_s2c, session, saveptr);
+        return handle_create_canvas(response_out, session, saveptr);
     } else if (strcmp(cmd, "create_rectangle") == 0){
-        return handle_create_rectangle(fd_s2c, session, saveptr);
+        return handle_create_rectangle(response_out, session, saveptr);
     } else if (strcmp(cmd, "create_circle") == 0){
-        return handle_create_circle(fd_s2c, session, saveptr);
+        return handle_create_circle(response_out, session, saveptr);
     } else if (strcmp(cmd, "set_animation_params") == 0) {
-        return handle_set_animation_params(fd_s2c, session, saveptr);
+        return handle_set_animation_params(response_out, session, saveptr);
     } else if (strcmp(cmd, "create_sprite") == 0) {
-        return handle_create_sprite(fd_s2c, session, saveptr);
+        return handle_create_sprite(response_out, session, saveptr);
     } else if (strcmp(cmd, "destroy_sprite") == 0) {
-        return handle_destroy_sprite(fd_s2c, session, saveptr);
+        return handle_destroy_sprite(response_out, session, saveptr);
     } else if (strcmp(cmd, "place_sprite") == 0) {
-        return handle_place_sprite(fd_s2c, session, saveptr);
+        return handle_place_sprite(response_out, session, saveptr);
     } else if (strcmp(cmd, "destroy_canvas")  == 0){
-        return handle_destroy_canvas(fd_s2c, session, saveptr);
+        return handle_destroy_canvas(response_out, session, saveptr);
     } else if (strcmp(cmd, "placement_up") == 0) {
-        return handle_placement_up(fd_s2c, session, saveptr);
+        return handle_placement_up(response_out, session, saveptr);
     } else if (strcmp(cmd, "placement_down") == 0) {
-        return handle_placement_down(fd_s2c, session, saveptr);
+        return handle_placement_down(response_out, session, saveptr);
     } else if (strcmp(cmd, "placement_top") == 0) {
-        return handle_placement_top(fd_s2c, session, saveptr);
+        return handle_placement_top(response_out, session, saveptr);
     } else if (strcmp(cmd, "placement_bottom") == 0) {
-        return handle_placement_bottom(fd_s2c, session, saveptr);
+        return handle_placement_bottom(response_out, session, saveptr);
     } else if (strcmp(cmd, "destroy_placement") == 0) {
-        return handle_destroy_placement(fd_s2c, session, saveptr);
+        return handle_destroy_placement(response_out, session, saveptr);
     } else if (strcmp(cmd, "generate") == 0) {
-        return handle_generate(fd_s2c, session, saveptr);
+        return handle_generate(response_out, session, saveptr);
     } else if (strcmp(cmd, "share_canvas") == 0){
-        return handle_share_canvas(fd_s2c, session, saveptr);
+        return handle_share_canvas(response_out, session, saveptr);
     } else if (strcmp(cmd, "barrier") == 0) {
-        return handle_barrier(fd_s2c, session, saveptr);
+        return handle_barrier(response_out, session, saveptr);
     } else if (strcmp(cmd, "Disconnect") == 0){
-        write(fd_s2c, "0\n", 2);
+        strcpy(response_out, "0\n");
         return 1;
     }
 
-    write(fd_s2c, "-1\n", 3);
+    strcpy(response_out, "-1\n");
     return 0;
 }
 
@@ -1379,9 +1413,11 @@ int main(int argc, char** argv, char** envp) {
             active_sessions[session_count].active = 1;
             active_sessions[session_count].read_len = 0;
             active_sessions[session_count].next_ticket = 0;
-            active_sessions[session_count].expected_ticket = 0;
-            pthread_mutex_init(&active_sessions[session_count].order_lock, NULL);
-            pthread_cond_init(&active_sessions[session_count].order_cond, NULL);
+            active_sessions[session_count].pending_responses = NULL;
+            active_sessions[session_count].pending_capacity = 0;
+            active_sessions[session_count].next_response_ticket = 0;
+
+            pthread_mutex_init(&active_sessions[session_count].response_lock, NULL);
             session_count++;
             pthread_mutex_unlock(&sessions_lock);
         }
@@ -1462,8 +1498,6 @@ int main(int argc, char** argv, char** envp) {
                         sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)session->client_pid);
                         unlink(fifo_c2s);
                         unlink(fifo_s2c);
-                        pthread_mutex_destroy(&session->order_lock);
-                        pthread_cond_destroy(&session->order_cond);
                     }
                     pthread_mutex_unlock(&sessions_lock);
                 }
