@@ -32,7 +32,7 @@ typedef struct {  // tracks every authenticated and active client
     pthread_mutex_t response_lock;
 } client_session_t;
 
-client_session_t* active_sessions = NULL;
+client_session_t** active_sessions = NULL;
 int session_count = 0;
 pthread_mutex_t sessions_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -139,6 +139,38 @@ rpc_task_t* queue_pop(void) {
     return task;
 }
 
+void cleanup_inactive_sessions(void) {
+    pthread_mutex_lock(&sessions_lock);
+
+    int write_idx = 0;
+
+    for (int i = 0; i < session_count; i++) {
+
+        client_session_t* session = active_sessions[i];
+
+        if (!session->active) {
+
+            for (size_t j = 0; j < session->pending_capacity; j++) {
+                free(session->pending_responses[j]);
+            }
+
+            free(session->pending_responses);
+
+            pthread_mutex_destroy(&session->response_lock);
+
+            free(session);
+
+        } else {
+
+            active_sessions[write_idx++] = active_sessions[i];
+        }
+    }
+
+    session_count = write_idx;
+
+    pthread_mutex_unlock(&sessions_lock);
+}
+
 void send_ordered_response(client_session_t* session, uint32_t ticket, const char* response) {
     pthread_mutex_lock(&session->response_lock);
 
@@ -207,11 +239,6 @@ void* worker_thread_routine(void* arg) {
                 sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)task->session->client_pid);
                 unlink(fifo_c2s);
                 unlink(fifo_s2c);
-                for (size_t i = 0; i < task->session->pending_capacity; i++) {
-                    free(task->session->pending_responses[i]);
-                }
-                free(task->session->pending_responses);
-                pthread_mutex_destroy(&task->session->response_lock);
                 pthread_mutex_unlock(&sessions_lock);
             }
             free(task);
@@ -1249,10 +1276,10 @@ int handle_barrier(char* response_out, client_session_t* session, char* saveptr)
     int expected_active_sharers = 0;  // calculate how many authorised users logged in
     
     for (int i = 0; i < session_count; i++) {
-        if (active_sessions[i].active) {
-            int is_authorized = (strcmp(target_node->owner_username, active_sessions[i].username) == 0);
+        if (active_sessions[i]->active) {
+            int is_authorized = (strcmp(target_node->owner_username, active_sessions[i]->username) == 0);
             for (int j = 0; j < target_node->shared_count; j++) {
-                if (strcmp(target_node->shared_usernames[j], active_sessions[i].username) == 0) {
+                if (strcmp(target_node->shared_usernames[j], active_sessions[i]->username) == 0) {
                     is_authorized = 1;
                     break;
                 }
@@ -1406,18 +1433,39 @@ int main(int argc, char** argv, char** envp) {
             int fd_s2c = open(fifo_s2c, O_WRONLY);
 
             pthread_mutex_lock(&sessions_lock);
-            active_sessions = realloc(active_sessions, sizeof(client_session_t) * (session_count + 1));
-            active_sessions[session_count].client_pid = client_pid;
-            active_sessions[session_count].fd_c2s = fd_c2s;
-            active_sessions[session_count].fd_s2c = fd_s2c;
-            active_sessions[session_count].active = 1;
-            active_sessions[session_count].read_len = 0;
-            active_sessions[session_count].next_ticket = 0;
-            active_sessions[session_count].pending_responses = NULL;
-            active_sessions[session_count].pending_capacity = 0;
-            active_sessions[session_count].next_response_ticket = 0;
+            client_session_t** resized = realloc(
+                active_sessions,
+                sizeof(client_session_t*) * (session_count + 1)
+            );
 
-            pthread_mutex_init(&active_sessions[session_count].response_lock, NULL);
+            if (resized == NULL) {
+                close(fd_c2s);
+                close(fd_s2c);
+                continue;
+            }
+
+            active_sessions = resized;
+            client_session_t* new_session = malloc(sizeof(client_session_t));
+
+            if (new_session == NULL) {
+                close(fd_c2s);
+                close(fd_s2c);
+                continue;
+            }
+
+            new_session->client_pid = client_pid;
+            new_session->fd_c2s = fd_c2s;
+            new_session->fd_s2c = fd_s2c;
+            new_session->active = 1;
+            new_session->read_len = 0;
+            new_session->next_ticket = 0;
+            new_session->pending_responses = NULL;
+            new_session->pending_capacity = 0;
+            new_session->next_response_ticket = 0;
+
+            pthread_mutex_init(&new_session->response_lock, NULL);
+
+            active_sessions[session_count] = new_session;
             session_count++;
             pthread_mutex_unlock(&sessions_lock);
         }
@@ -1425,7 +1473,7 @@ int main(int argc, char** argv, char** envp) {
         pthread_mutex_lock(&sessions_lock);
         int total_monitored = 0;
         for (int i = 0; i < session_count; i++) {
-            if (active_sessions[i].active) total_monitored++;
+            if (active_sessions[i]->active) total_monitored++;
         }
 
         if (total_monitored == 0) {
@@ -1439,8 +1487,8 @@ int main(int argc, char** argv, char** envp) {
         
         int current_idx = 0;
         for (int i = 0; i < session_count; i++) {
-            if (active_sessions[i].active) {
-                fds[current_idx].fd = active_sessions[i].fd_c2s;
+            if (active_sessions[i]->active) {
+                fds[current_idx].fd = active_sessions[i]->fd_c2s;
                 fds[current_idx].events = POLLIN;
                 fds[current_idx].revents = 0;
                 session_indices[current_idx] = i;
@@ -1450,11 +1498,12 @@ int main(int argc, char** argv, char** envp) {
         pthread_mutex_unlock(&sessions_lock);
             
         int poll_result = poll(fds, total_monitored, 10);
+        cleanup_inactive_sessions();
         if (poll_result > 0) {
             for (int i = 0; i < total_monitored; i++) {
                 if (fds[i].revents & POLLIN) {
                     pthread_mutex_lock(&sessions_lock);
-                    client_session_t* session = &active_sessions[session_indices[i]];
+                    client_session_t* session = active_sessions[session_indices[i]];
                     
                     // read into buffer rihgt after any leftover parital data
                     size_t space_left = sizeof(session->read_buf) - session->read_len - 1;
