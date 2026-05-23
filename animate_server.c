@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <poll.h>
+#include <errno.h>
 
 volatile sig_atomic_t client_requested = 0;
 volatile pid_t pending_client_pid = 0;
@@ -172,6 +173,30 @@ void cleanup_inactive_sessions(void) {
     pthread_mutex_unlock(&sessions_lock);
 }
 
+void disconnect_client(client_session_t* session) {
+    if (session == NULL || !session->active) {
+        return;
+    }
+
+    session->active = 0;
+
+    if (session->fd_c2s < 0){  // client already closed
+        return;
+    }
+
+    close(session->fd_c2s);
+    close(session->fd_s2c);
+
+    char fifo_c2s[64];
+    char fifo_s2c[64];
+
+    sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)session->client_pid);
+    sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)session->client_pid);
+
+    unlink(fifo_c2s);
+    unlink(fifo_s2c);
+}
+
 void send_ordered_response(client_session_t* session, uint32_t ticket, const char* response) {
     pthread_mutex_lock(&session->response_lock);
 
@@ -229,17 +254,7 @@ void* worker_thread_routine(void* arg) {
                     sleep(1);  // 1 secodn wait for rejection message
                 }
 
-                task->session->active = 0;
-
-                close(task->session->fd_c2s);
-                close(task->session->fd_s2c);
-                
-                char fifo_c2s[64];
-                char fifo_s2c[64];
-                sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)task->session->client_pid);
-                sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)task->session->client_pid);
-                unlink(fifo_c2s);
-                unlink(fifo_s2c);
+                disconnect_client(task->session);
                 pthread_mutex_unlock(&sessions_lock);
             }
             free(task);
@@ -1498,6 +1513,17 @@ int main(int argc, char** argv, char** envp) {
             }
 
             active_sessions = resized;
+            for (int i = 0; i < session_count; i++) {  // check whether clients still exist preiodically
+                client_session_t* session = active_sessions[i];
+
+                if (!session->active) {
+                    continue;
+                }
+
+                if (kill(session->client_pid, 0) == -1 && errno == ESRCH) {
+                    disconnect_client(session);
+                }
+            }
             client_session_t* new_session = malloc(sizeof(client_session_t));
 
             if (new_session == NULL) {
@@ -1593,16 +1619,8 @@ int main(int argc, char** argv, char** envp) {
                             session->read_buf[session->read_len] = '\0';
                         }
                     } else if (bytes_read == 0) {
-                        session->active = 0;
-                        close(session->fd_c2s);
-                        close(session->fd_s2c);
-                        char fifo_c2s[64], fifo_s2c[64];
-                        sprintf(fifo_c2s, "FIFO_C2S_%ld", (long)session->client_pid);
-                        sprintf(fifo_s2c, "FIFO_S2C_%ld", (long)session->client_pid);
-                        unlink(fifo_c2s);
-                        unlink(fifo_s2c);
+                        disconnect_client(session);
                     }
-                    pthread_mutex_unlock(&sessions_lock);
                 }
             }
             free(fds);

@@ -106,8 +106,14 @@ int main(int argc, char** argv, char** envp) {
                 printf("Value error\n");
             } else if (strcmp(response_buffer, "-3") == 0) {
                 printf("Internal error\n");
-            } else if (strncmp(response_buffer, "0 ", 2) == 0) { // writign to file calls
-                printf("Success %s\n", response_buffer + 2);
+            } else if (strcmp(response_buffer, "0 -1") == 0){
+                printf("Data write failed");
+            } else if (strcmp(response_buffer, "0 0 -1") == 0){
+                printf("Movie write failed");
+            } else if (strcmp(response_buffer, "0 0 0") == 0) {
+                printf("Success\n");
+            } else if (strncmp(response_buffer, "0 ", 2) == 0) {
+                printf("Success %s\n", response_buffer + 2); // api fucntion retrun value printed
             } else if (strcmp(response_buffer, "0") == 0) {
                 printf("Success\n");
             } else {
