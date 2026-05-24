@@ -239,6 +239,20 @@ void send_ordered_response(client_session_t* session, uint32_t ticket, const cha
     pthread_mutex_unlock(&session->response_lock);
 }
 
+void canvas_node_delete(uint64_t canvas_address){
+    // delete node from global linked list
+    placement_node_t** p_link = &global_placement_registry;
+    while (*p_link != NULL) {
+        if ((*p_link)->canvas_handle == canvas_address) {
+            placement_node_t* temp = *p_link;
+            *p_link = (*p_link)->next;
+            free(temp);
+            continue;
+        }
+        p_link = &((*p_link)->next);
+    }
+}
+
 void* worker_thread_routine(void* arg) {
     while (1) {
         rpc_task_t* task = queue_pop();
@@ -504,6 +518,10 @@ int handle_create_canvas(char* response_out, client_session_t* session, char* sa
 
     canvas_share_node_t* new_node = malloc(sizeof(canvas_share_node_t));
     if (new_node == NULL) {
+        pthread_mutex_lock(&animate_lock);
+        animate_destroy_canvas(new_canvas);
+        pthread_mutex_unlock(&animate_lock);
+
         strcpy(response_out, "-3\n");
         return 0;
     }
@@ -957,12 +975,14 @@ int handle_destroy_canvas(char* response_out, client_session_t* session, char* s
 
             pthread_mutex_lock(&animate_lock);
             animate_destroy_canvas((struct canvas*)canvas_address);
+            canvas_node_delete(canvas_address);
             pthread_mutex_unlock(&animate_lock);
         } else {
             // other collaborators active, so do not call on this canvas
         }
     } else {
         pthread_mutex_lock(&animate_lock);
+        canvas_node_delete(canvas_address);
         animate_destroy_canvas((struct canvas*)canvas_address);
         pthread_mutex_unlock(&animate_lock);
     }
@@ -1107,6 +1127,21 @@ int handle_destroy_placement(char* response_out, client_session_t* session, char
     struct sprite_placement* target_placement = (struct sprite_placement*)placement_address;
     pthread_mutex_lock(&animate_lock);
     animate_destroy_placement(target_placement);
+    
+    // ensure to delete node for placement
+    pthread_mutex_lock(&registry_lock);
+    placement_node_t** link = &global_placement_registry;
+    while (*link != NULL) {
+        if ((*link)->placement_handle == placement_address) {
+            placement_node_t* temp = *link;
+            *link = (*link)->next;
+            free(temp);
+            break;
+        }
+        link = &((*link)->next);
+    }
+    pthread_mutex_unlock(&registry_lock);
+    
     pthread_mutex_unlock(&animate_lock);
 
     strcpy(response_out, "0\n");
@@ -1225,13 +1260,13 @@ int handle_share_canvas(char* response_out, client_session_t* session, char* sav
     char* canvas_handle_str = strtok_r(NULL, " ", &saveptr);
     char* target_username = strtok_r(NULL, " ", &saveptr);
 
-    if (!valid_authorised_username(target_username)) {
-        strcpy(response_out, "-2\n");
+    if (canvas_handle_str == NULL || target_username == NULL) {
+        strcpy(response_out, "-1\n");
         return 0;
     }
 
-    if (canvas_handle_str == NULL || target_username == NULL) {
-        strcpy(response_out, "-1\n");
+    if (!valid_authorised_username(target_username)) {
+        strcpy(response_out, "-2\n");
         return 0;
     }
 
@@ -1289,7 +1324,18 @@ int handle_share_canvas(char* response_out, client_session_t* session, char* sav
     if (!already_shared) {
         if (target_node->shared_count >= target_node->shared_capacity) {
             target_node->shared_capacity = target_node->shared_capacity == 0 ? 4 : target_node->shared_capacity * 2;
-            target_node->shared_usernames = realloc(target_node->shared_usernames, sizeof(char*) * target_node->shared_capacity);
+            char** resized = realloc(
+                target_node->shared_usernames,
+                sizeof(char*) * target_node->shared_capacity
+            );
+
+            if (resized == NULL) {
+                pthread_mutex_unlock(&registry_lock);
+                strcpy(response_out, "-3\n");
+                return 0;
+            }
+
+            target_node->shared_usernames = resized;
         }
         target_node->shared_usernames[target_node->shared_count] = strdup(target_username);
         target_node->shared_count++;
@@ -1563,7 +1609,13 @@ int main(int argc, char** argv, char** envp) {
 
         struct pollfd* fds = malloc(sizeof(struct pollfd) * total_monitored);
         int* session_indices = malloc(sizeof(int) * total_monitored);
-        
+        if (fds == NULL || session_indices == NULL) {
+            free(fds);
+            free(session_indices);
+            pthread_mutex_unlock(&sessions_lock);
+            continue;
+        }
+
         int current_idx = 0;
         for (int i = 0; i < session_count; i++) {
             if (active_sessions[i]->active) {
@@ -1623,9 +1675,10 @@ int main(int argc, char** argv, char** envp) {
                     }
                 }
             }
-            free(fds);
-            free(session_indices);
         }
-    }    
+        free(fds);
+        free(session_indices);
+    }
+    free(threads);    
     return 0;
 }
