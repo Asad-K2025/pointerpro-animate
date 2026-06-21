@@ -349,9 +349,3 @@ void animate_generate_frame(const struct canvas* canvas, size_t frame,
     }
 
 }
-
-// Optional extension
-void animate_set_animation_function(struct sprite_placement* sprite_placement,
-                                    animate_fn, void* priv) {
-}
-
