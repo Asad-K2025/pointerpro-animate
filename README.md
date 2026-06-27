@@ -148,3 +148,10 @@ A combination of through manual and automated testing has been conducted to test
 - Ensuring no memory leaks
 - Prevention of live locks in system
 
+Automated Python unittest testcases are available in pointerpro-animate under the tests folder. To run:
+
+```python
+cd animate-platform/tests
+python3 tests.py
+```
+
